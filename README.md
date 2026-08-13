@@ -96,47 +96,479 @@ Treating all of these as one context creates an implicit and poorly controlled s
 
 
 ---
+Yes. The objectives become much stronger if each one states **the architectural problem it exists to solve**. Otherwise they read like desirable properties rather than requirements derived from failure modes.
 
-2. Design Objectives
+I would rewrite the section as follows.
 
-The architecture should provide:
+# 2. Design Objectives
 
-O1 — State isolation
+The architecture is designed around a central problem:
 
-Different classes of state must have explicit lifetime and mutation semantics.
+> **A stateful RAG system does more than retrieve documents. It continuously decides what information exists, what information each cognitive operation may see, what actions the system should take, and what transient observations deserve persistence.**
 
-O2 — Stage-specific context
+Those decisions have different lifetimes, authorities, and failure modes. The architecture therefore establishes the following objectives.
 
-Each cognitive operation receives a context appropriate to its objective.
+---
 
-O3 — Centralized context resolution
+## O1 — State isolation
 
-Stages should declare information requirements rather than implement independent retrieval mechanisms.
+**Objective:** Different classes of state must have explicit lifetime and mutation semantics.
 
-O4 — Explicit mutation authority
+### Why
 
-Persistent memory cannot be modified merely because a stage can read it.
+A pipeline simultaneously handles information with fundamentally different lifetimes:
 
-O5 — Controlled persistence
+* persistent knowledge that should survive sessions;
+* session state that belongs to the current interaction;
+* execution state that exists only while solving the current task.
 
-Transient observations become persistent memories only through an explicit promotion mechanism.
+Treating these as one undifferentiated state object creates ambiguous ownership.
 
-O6 — Replaceable policies
+For example, if a retrieval result is placed into the same state structure as a durable user preference, the architecture has no intrinsic answer to:
 
-Deterministic mechanisms should be replaceable with learned policies without restructuring the state architecture.
+> Should this information survive the execution?
 
-O7 — Debuggability
+Likewise, if every stage can mutate the same state object, mutation authority becomes implicit.
 
-The system should expose enough intermediate state to explain:
+The architecture therefore separates state according to **lifetime and mutation ownership**, currently:
 
-why something was retrieved
-why it was presented
-why a stage acted
-why something became memory
+```text
+M_t       Persistent state
+G_t/H_t   Session state
+W_t       Working / execution state
+```
 
-O8 — Controlled complexity
+The purpose is not taxonomy. The purpose is to establish enforceable boundaries.
 
-The architecture should not introduce a planner, learned router, memory RL system, or additional LLM invocation until an observed failure justifies it.
+---
+
+## O2 — Stage-specific context
+
+**Objective:** Each cognitive operation receives context appropriate to its objective.
+
+### Why
+
+Different stages solve different problems.
+
+A query interpreter may need:
+
+```text
+conversation
+current objective
+relevant user/project preferences
+```
+
+A retrieval judge may need:
+
+```text
+query
+retrieved evidence
+retrieval history
+evaluation criteria
+```
+
+A generator may need:
+
+```text
+validated evidence
+current objective
+output constraints
+```
+
+Giving all three the same context creates two problems:
+
+1. **Context pollution:** irrelevant information competes for model attention.
+2. **Context leakage:** information available to one cognitive operation becomes implicitly available to another.
+
+Therefore context should be a **function of the stage's objective**, rather than a dump of available state.
+
+---
+
+## O3 — Centralized context resolution
+
+**Objective:** Stages should declare information requirements rather than implement independent retrieval mechanisms.
+
+### Why
+
+Without centralization, each stage eventually develops its own version of:
+
+```text
+retrieve()
+searchMemory()
+getRelevantDocuments()
+loadHistory()
+```
+
+That produces retrieval drift.
+
+For example:
+
+```text
+Interpreter → vector search
+Retriever   → hybrid search
+Judge       → another vector search
+Generator   → memory API
+```
+
+After enough iterations, nobody can state precisely why each stage received its particular context.
+
+Centralization gives us:
+
+```text
+Stage
+  │
+  │ ContextContract
+  ▼
+ContextResolver
+  │
+  ├── state
+  ├── memory
+  ├── retrieval
+  ├── scoring
+  └── token budget
+  │
+  ▼
+Stage Context
+```
+
+The stage declares **what it requires**.
+
+The resolver determines **how that information is obtained and assembled**.
+
+This also creates the architectural seam required for replacing deterministic retrieval with learned retrieval later.
+
+---
+
+## O4 — Explicit mutation authority
+
+**Objective:** Persistent memory cannot be modified merely because a stage can read it.
+
+### Why
+
+Read access and write access have fundamentally different consequences.
+
+A stage may need to know:
+
+> "The user prefers PostgreSQL."
+
+That does not imply that the stage should be able to change:
+
+```text
+M_t.user_preferences
+```
+
+If read and write authority are coupled, any stage that receives persistent memory becomes a potential memory editor.
+
+That makes memory corruption an emergent property of ordinary pipeline execution.
+
+The architecture therefore separates:
+
+```text
+Read authority
+     ≠
+Mutation authority
+```
+
+For example:
+
+```text
+RetrievalJudge
+    READ  → M_t.project_facts
+    WRITE → W_t.judgement
+
+MemoryManager
+    READ  → M_t
+    WRITE → M_t
+```
+
+The distinction should exist at the architecture/runtime level rather than depend on an instruction such as "please don't modify memory."
+
+---
+
+## O5 — Controlled persistence
+
+**Objective:** Transient observations become persistent memories only through an explicit promotion mechanism.
+
+### Why
+
+An agent generates enormous amounts of information during execution:
+
+```text
+retrieval results
+failed searches
+hypotheses
+intermediate interpretations
+tool outputs
+draft conclusions
+temporary reasoning
+```
+
+Most of this should disappear.
+
+If the system automatically persists interesting-looking observations, memory accumulates:
+
+```text
+useful information
++
+temporary information
++
+incorrect hypotheses
++
+duplicates
++
+obsolete information
+```
+
+The resulting memory becomes progressively less trustworthy.
+
+Therefore:
+
+```text
+W_t
+ │
+ │ candidate
+ ▼
+Write Policy
+ │
+ ├── ADD
+ ├── UPDATE
+ ├── SUPERSEDE
+ ├── DELETE
+ └── NOOP
+ │
+ ▼
+M_t
+```
+
+Persistence becomes a **decision**, rather than a side effect of execution.
+
+---
+
+## O6 — Replaceable policies
+
+**Objective:** Deterministic mechanisms should be replaceable with learned policies without restructuring the state architecture.
+
+### Why
+
+The architecture should distinguish **where a decision happens** from **how the decision is made**.
+
+For example:
+
+```text
+ContextResolver
+      │
+      └── SelectionPolicy
+             ├── deterministic v1
+             ├── heuristic v2
+             └── learned v3
+```
+
+Likewise:
+
+```text
+WritePolicy
+      │
+      ├── deterministic
+      ├── LLM-assisted
+      └── learned/RL
+```
+
+This matters because the research frontier is moving toward learned memory management and context selection.
+
+The architecture should therefore permit:
+
+```text
+same state
+same contracts
+same interfaces
+different policy
+```
+
+without requiring a redesign of the system.
+
+This also supports controlled experimentation: a learned policy can replace a deterministic baseline while the rest of the architecture remains constant.
+
+---
+
+## O7 — Debuggability
+
+**Objective:** The system should expose enough intermediate state to explain:
+
+* why something was retrieved;
+* why it was presented to a stage;
+* why a stage acted;
+* why something became memory.
+
+### Why
+
+Agentic failures often produce a valid-looking final answer while the underlying decision path is wrong.
+
+Consider:
+
+```text
+Bad answer
+   ↓
+wrong evidence
+   ↓
+wrong context selection
+   ↓
+wrong memory retrieved
+   ↓
+memory was incorrectly written three sessions earlier
+```
+
+A final-output log cannot identify the failure.
+
+The architecture therefore needs provenance across the entire path:
+
+```text
+Memory
+   ↓
+candidate generation
+   ↓
+retrieval score
+   ↓
+ContextContract
+   ↓
+context selection
+   ↓
+stage invocation
+   ↓
+stage decision
+   ↓
+write proposal
+   ↓
+write policy
+   ↓
+persistent mutation
+```
+
+This makes the system inspectable at the **decision boundary**, rather than merely observable at the API boundary.
+
+A useful invariant is:
+
+> Every persistent mutation and every context inclusion should have an attributable reason.
+
+---
+
+## O8 — Controlled complexity
+
+**Objective:** The architecture should not introduce a planner, learned router, memory-RL system, or additional LLM invocation until an observed failure justifies it.
+
+### Why
+
+Each additional intelligent component introduces another source of:
+
+* latency;
+* token consumption;
+* nondeterminism;
+* coordination failure;
+* debugging complexity;
+* evaluation burden.
+
+There is a strong architectural temptation to solve uncertainty by adding another agent:
+
+```text
+Retriever
+    ↓
+Judge
+    ↓
+Planner
+    ↓
+Memory Agent
+    ↓
+Context Agent
+    ↓
+Router
+```
+
+That can make the architecture appear more capable while making causal attribution harder.
+
+The baseline therefore uses:
+
+```text
+fixed workflow
++
+local conditional branches
++
+deterministic policies
+```
+
+A more sophisticated mechanism enters only after an observed failure establishes a need for it.
+
+For example:
+
+```text
+Fixed workflow
+      │
+      ├── works → keep
+      │
+      └── observed failure
+              ↓
+        identify missing capability
+              ↓
+        introduce smallest mechanism
+              ↓
+        evaluate against baseline
+```
+
+This makes complexity **evidence-driven**.
+
+---
+
+# C: The objectives form a dependency structure
+
+There is also a useful hierarchy here.
+
+```text
+                    O1
+              State isolation
+                     │
+          ┌──────────┴──────────┐
+          ▼                     ▼
+         O4                    O5
+ Mutation authority       Controlled persistence
+          │                     │
+          └──────────┬──────────┘
+                     ▼
+                    O3
+          Centralized resolution
+                     │
+                     ▼
+                    O2
+          Stage-specific context
+                     │
+          ┌──────────┴──────────┐
+          ▼                     ▼
+         O6                    O7
+ Replaceable policies      Debuggability
+          │                     │
+          └──────────┬──────────┘
+                     ▼
+                    O8
+          Controlled complexity
+```
+
+This exposes something important.
+
+**O8 is not merely another feature. It governs how the other objectives evolve.**
+
+The architecture establishes strong boundaries first:
+
+```text
+state
+authority
+context
+persistence
+```
+
+Then it allows increasingly sophisticated policies to inhabit those boundaries.
+
+That gives us a useful architectural principle:
+
+> **Increase decision intelligence without increasing architectural entanglement.**
+
+That, I think, is a better statement of what the architecture is trying to achieve than "build a better RAG pipeline."
 
 
 ---
