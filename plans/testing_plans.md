@@ -1,1246 +1,1577 @@
-Yes. This should be treated as a **testing architecture**, rather than one giant end-to-end test suite.
+# Testing Architecture Specification
 
-The key distinction is:
+## Isolation, Contract, Integration, and Model-Dependent Testing
 
-> **Test the architectural guarantees independently of the intelligence that eventually operates inside the architecture.**
+**Status:** Implementation Binding Document
+**Version:** 0.1
+**Scope:** Testing strategy for the architecture defined in the Architecture Binding Specification.
 
-That gives us a large deterministic test surface before introducing an LLM, embeddings, vector databases, or external tools.
+---
 
-# Testing Architecture for the Governed RAG System
+# D1. Purpose
 
-## 1. Purpose
+The system contains components with radically different testing requirements.
 
-The system contains two fundamentally different categories of behavior.
+Some components are ordinary deterministic software and should be tested without an LLM, vector database, network, or external service.
 
-### Category A — Architectural behavior
+Some components represent boundaries around those systems and can be tested with mocks.
 
-These are properties that should remain correct regardless of which LLM, retriever, vector database, or policy implementation the system uses.
+Other components exist specifically to evaluate model behavior. Their meaningful tests require an actual LLM, retrieval infrastructure, or persistent memory system.
+
+The testing architecture must distinguish these cases explicitly.
+
+> **A component should be tested at the lowest layer that can establish the property being tested.**
+
+A model should not be involved merely because the production system uses one.
+
+Conversely, a mock must not be treated as evidence for behavior that exists specifically because of the model.
+
+---
+
+# D2. Testing Model
+
+We divide testing into five levels.
+
+```text
+                         ┌──────────────────────┐
+                         │   System Evaluation  │
+                         │ Real model + infra   │
+                         └──────────┬───────────┘
+                                    │
+                         ┌──────────▼───────────┐
+                         │ Integration Testing  │
+                         │ Real boundaries      │
+                         └──────────┬───────────┘
+                                    │
+                         ┌──────────▼───────────┐
+                         │ Contract Testing     │
+                         │ Mocks / fakes        │
+                         └──────────┬───────────┘
+                                    │
+                         ┌──────────▼───────────┐
+                         │ Component Testing    │
+                         │ Deterministic        │
+                         └──────────┬───────────┘
+                                    │
+                         ┌──────────▼───────────┐
+                         │ Pure Unit Testing    │
+                         │ No infrastructure   │
+                         └──────────────────────┘
+```
+
+These levels answer different questions.
+
+| Level             | Question                                                       |
+| ----------------- | -------------------------------------------------------------- |
+| Unit              | Does this logic satisfy its contract?                          |
+| Component         | Does this architectural component behave correctly?            |
+| Contract          | Do two components agree on their interface?                    |
+| Integration       | Does the real infrastructure behave correctly at the boundary? |
+| System evaluation | Does the complete cognitive system perform its intended task?  |
+
+---
+
+# D3. Testability Classification
+
+Every architectural component receives a testing classification.
+
+### T0 — Pure
+
+Requires no external dependency.
 
 Examples:
 
-* state isolation;
-* authorization;
-* context contracts;
-* context resolution;
-* token budgeting;
-* persistence boundaries;
-* write semantics;
-* provenance;
-* workflow transitions;
-* policy replacement.
+```text
+ContextContract validation
+Token accounting
+State transition validation
+Permission checks
+Budget calculations
+Provenance construction
+Schema validation
+Workflow graph validation
+```
 
-These should be testable with **plain deterministic fixtures and mocks**.
+---
 
-### Category B — Intelligence-dependent behavior
+### T1 — Dependency-isolated
 
-These concern whether an LLM or retrieval model makes good decisions.
+The production dependency exists, but the component's behavior can be tested through mocks/fakes.
 
 Examples:
 
-* query interpretation;
-* semantic retrieval;
-* evidence assessment;
-* answer synthesis;
-* memory extraction;
-* contradiction detection;
-* epistemic reasoning;
-* learned context selection.
+```text
+ContextResolver
+MemoryWritePolicy
+PromotionPolicy
+Workflow engine
+Stage executor
+Memory repository
+Retrieval policy
+```
 
-These require an actual model or a sufficiently faithful model substitute.
-
-The test architecture should keep the two categories separate.
+A fake repository or deterministic retrieval source is sufficient.
 
 ---
 
-# 2. Testing Layers
+### T2 — Infrastructure-dependent
+
+The property being tested depends on actual infrastructure.
+
+Examples:
 
 ```text
-                         ┌──────────────────────────┐
-                         │      System Tests        │
-                         │                          │
-                         │ LLM + Retrieval + Memory │
-                         │ + Tools + Workflow       │
-                         └────────────┬─────────────┘
-                                      │
-                         ┌────────────▼─────────────┐
-                         │   Intelligence Tests     │
-                         │                          │
-                         │ LLM / Embedding / Rerank │
-                         └────────────┬─────────────┘
-                                      │
-                    ┌─────────────────▼──────────────────┐
-                    │       Policy / Integration Tests   │
-                    │                                    │
-                    │ mocked LLM + mocked retrieval      │
-                    └─────────────────┬──────────────────┘
-                                      │
-              ┌───────────────────────▼───────────────────────┐
-              │              Architecture Tests              │
-              │                                               │
-              │ state / contracts / resolver / permissions   │
-              │ persistence / provenance / workflow          │
-              └───────────────────────┬───────────────────────┘
-                                      │
-                         ┌────────────▼────────────┐
-                         │       Unit Tests        │
-                         │                         │
-                         │ pure functions / types │
-                         └─────────────────────────┘
+Vector search behavior
+Embedding quality
+Database indexing
+Transaction semantics
+Persistence/recovery
+Actual retrieval latency
 ```
 
-The important property is that **higher layers should not be required to establish correctness of lower layers**.
+These require the relevant infrastructure.
 
 ---
 
-# 3. Testability Classification
+### T3 — Model-dependent
 
-We can classify every component using four levels.
+The property under test is fundamentally about model behavior.
 
-| Level  | Dependency                                             | Test mechanism          |
-| ------ | ------------------------------------------------------ | ----------------------- |
-| **T0** | No external dependency                                 | Pure deterministic test |
-| **T1** | External behavior represented by interface             | Mock/fake               |
-| **T2** | Actual model/database required for meaningful behavior | Integration test        |
-| **T3** | Multiple real components interacting                   | End-to-end evaluation   |
+Examples:
 
-This gives us a concrete rule:
+```text
+Epistemic reasoning
+Query interpretation
+LLM-generated retrieval refinement
+Memory extraction
+Contradiction detection
+Structured reasoning
+Prompt effectiveness
+Context sufficiency
+```
 
-> Build T0/T1 tests first. They establish architectural correctness before intelligence quality becomes a variable.
+A mock LLM can test orchestration around these operations.
+
+It cannot establish that the LLM itself performs them correctly.
 
 ---
 
-# 4. T0 — Pure Architectural Tests
+### T4 — System-dependent
 
-These require:
+The property emerges from interactions among multiple cognitive components.
 
-* no LLM;
-* no embeddings;
-* no vector database;
-* no network;
-* no external service.
-
-They should execute extremely quickly.
-
-## 4.1 State Isolation
-
-Test:
+Examples:
 
 ```text
-Mₜ
-Gₜ/Hₜ
-Wₜ
+Does memory improve future retrieval?
+Does epistemic governance improve answer quality?
+Does stage-specific context improve task performance?
+Does write governance prevent memory pollution?
+Does the complete loop improve across sessions?
 ```
 
-### Tests
-
-**T0-S1 — Working state disappears**
-
-```text
-create Wₜ
-insert observation
-terminate execution
-assert Wₜ unavailable
-```
-
-**T0-S2 — Working state cannot mutate persistent memory**
-
-Attempt:
-
-```text
-Wₜ → Mₜ
-```
-
-without the promotion mechanism.
-
-Expected:
-
-```text
-rejected
-```
-
-**T0-S3 — Session state survives stage boundaries**
-
-```text
-Stage A
- ↓
-Gₜ
- ↓
-Stage B
-```
-
-The second stage sees permitted session state.
-
-**T0-S4 — Session state does not survive session termination**
-
-Straightforward lifecycle test.
+These require realistic model and infrastructure configurations.
 
 ---
 
-# 5. T0 — Mutation Authority
+# D4. Architectural Test Matrix
 
-This is one of the most important test groups.
+| Component              | T0 | T1 | T2 | T3 | T4 |
+| ---------------------- | -: | -: | -: | -: | -: |
+| AgentState             |  ✓ |    |    |    |    |
+| State permissions      |  ✓ |    |    |    |    |
+| ContextContract        |  ✓ |    |    |    |    |
+| ContextResolver        |  ✓ |  ✓ |    |    |    |
+| RetrievalPolicy        |  ✓ |  ✓ |  ✓ |    |    |
+| RankingPolicy          |  ✓ |  ✓ |  ✓ |    |    |
+| BudgetPolicy           |  ✓ |    |    |    |    |
+| Provenance             |  ✓ |    |    |    |    |
+| Workflow               |  ✓ |  ✓ |    |    |    |
+| Stage selection        |  ✓ |  ✓ |    |  ✓ |    |
+| Stage execution        |    |  ✓ |    |  ✓ |    |
+| EpistemicPolicy        |  ✓ |  ✓ |    |  ✓ |  ✓ |
+| EvidencePolicy         |  ✓ |  ✓ |    |  ✓ |  ✓ |
+| MemoryStore            |    |  ✓ |  ✓ |    |    |
+| MemoryWritePolicy      |  ✓ |  ✓ |    |  ✓ |  ✓ |
+| PromotionPolicy        |  ✓ |  ✓ |    |  ✓ |  ✓ |
+| ConflictResolution     |  ✓ |  ✓ |    |    |  ✓ |
+| ForgettingPolicy       |  ✓ |  ✓ |    |    |  ✓ |
+| LLM adapter            |    |  ✓ |    |  ✓ |    |
+| Vector adapter         |    |  ✓ |  ✓ |    |    |
+| Complete RAG loop      |    |    |  ✓ |  ✓ |  ✓ |
+| Cross-session learning |    |    |    |    |  ✓ |
 
-Given:
-
-```text
-Stage A
-read: Mₜ.foo
-write: Gₜ.bar
-```
-
-attempt:
-
-```text
-Stage A → Mₜ.foo = newValue
-```
-
-must fail.
-
-Test matrix:
-
-| Stage          | Read M | Write M | Read G | Write G | Read W | Write W |
-| -------------- | -----: | ------: | -----: | ------: | -----: | ------: |
-| Interpreter    |      ✓ |       ✗ |      ✓ |       ✓ |      ✓ |       ✓ |
-| Retriever      |      ✓ |       ✗ |      ✓ |       ✗ |      ✓ |       ✓ |
-| Judge          |      ✓ |       ✗ |      ✓ |       ✗ |      ✓ |       ✓ |
-| Memory Manager |      ✓ |       ✓ |      ✓ |       ✓ |      ✓ |       ✓ |
-
-The actual permissions can change.
-
-The invariant does not:
-
-> **Permission must be enforced by the architecture rather than by the LLM prompt.**
-
-This requires no LLM.
+The matrix is a guide to **where evidence comes from**, rather than a requirement to test every component at every level.
 
 ---
 
-# 6. T0 — Context Contract
+# D5. Pure State Tests
 
-A contract can be tested entirely using synthetic state.
+`AgentState` should be one of the most heavily tested parts of the system.
+
+No LLM is required.
+
+No database is required.
+
+No embeddings are required.
+
+## Tests
+
+### State lifetime
+
+```text
+Execution starts
+    ↓
+W_t exists
+    ↓
+Execution terminates
+    ↓
+W_t disappears
+```
+
+### Session lifetime
+
+```text
+Execution 1
+    ↓
+G_t persists
+    ↓
+Execution 2
+    ↓
+G_t available
+    ↓
+Session terminates
+    ↓
+G_t disappears
+```
+
+### Persistent lifetime
+
+```text
+Execution 1
+    ↓
+M_t mutation
+    ↓
+Execution terminates
+    ↓
+Execution 2
+    ↓
+M_t remains
+```
+
+These are deterministic invariants.
+
+---
+
+# D6. Mutation Authority Tests
+
+Mutation permissions must be tested without an LLM.
 
 Example:
 
 ```text
-ContextContract {
-    required = [
-        currentQuery,
-        retrievedEvidence
-    ]
+Interpreter
+  read M_t ✓
+  write M_t ✗
 
-    optional = [
-        conversationSummary
-    ]
+Retriever
+  read M_t ✓
+  write M_t ✗
 
-    tokenBudget = 4000
+MemoryManager
+  read M_t ✓
+  write M_t ✓
+```
+
+A test should attempt unauthorized mutations deliberately.
+
+Expected result:
+
+```text
+PermissionDenied
+```
+
+This is an architectural security property.
+
+It should never depend on a prompt.
+
+---
+
+# D7. Context Contract Tests
+
+The closed-world property is deterministic.
+
+Given:
+
+```text
+required:
+  current_goal
+
+optional:
+  prior_failures
+```
+
+and state:
+
+```text
+current_goal
+prior_failures
+personal_memory
+secret_state
+future_field
+```
+
+the resolver must produce:
+
+```text
+current_goal
+prior_failures
+```
+
+and nothing else.
+
+Adding:
+
+```text
+future_field
+```
+
+to the state must not automatically expose it.
+
+This test requires no LLM.
+
+---
+
+# D8. Context Resolver Tests
+
+The resolver can be tested with synthetic state.
+
+Example:
+
+```text
+State:
+  100 memory records
+  20 session records
+  10 working records
+
+Contract:
+  required = goal
+  optional = relevant_memory
+  budget = 500 tokens
+```
+
+The test can verify:
+
+* only authorized sources are searched
+* required context is preserved
+* optional context is ranked
+* budget is respected
+* excluded information is absent
+* provenance is attached
+* resolver does not mutate state
+
+No real vector database is necessary.
+
+---
+
+# D9. Retrieval Testing
+
+Retrieval has three distinct questions.
+
+### Retrieval mechanics
+
+```text
+query → candidates
+```
+
+Can be tested using a fake corpus.
+
+### Retrieval infrastructure
+
+```text
+query → actual vector database → candidates
+```
+
+Requires the real database.
+
+### Retrieval quality
+
+```text
+query + real corpus → useful evidence
+```
+
+Requires realistic data and evaluation.
+
+These should remain separate.
+
+A passing unit test proves:
+
+> the retrieval algorithm correctly processes its inputs.
+
+It does not prove:
+
+> semantic retrieval is good.
+
+---
+
+# D10. Mock Retrieval
+
+The testing system should provide a deterministic retrieval implementation.
+
+```dart
+abstract interface class RetrievalPolicy {
+  Future<RetrievalResult> retrieve(
+    RetrievalRequest request,
+  );
 }
 ```
 
-Synthetic state:
+Test implementation:
 
 ```text
-M:
-  userPreference
-  projectFact
-  secretFact
-
-G:
-  currentQuery
-  conversationSummary
-
-W:
-  retrievedEvidence
-  failedRetrieval
+FakeRetrievalPolicy
 ```
 
-Expected context:
+Example:
 
 ```text
-currentQuery
-retrievedEvidence
-conversationSummary
+query = "database scalability"
+
+returns:
+  memory-17
+  document-42
+  document-51
+```
+
+This allows us to test the entire context pipeline deterministically.
+
+---
+
+# D11. Ranking Tests
+
+Ranking should be tested using known candidate sets.
+
+Example:
+
+```text
+Candidate A:
+  relevance = .9
+  recency = .2
+  authority = .8
+
+Candidate B:
+  relevance = .7
+  recency = .9
+  authority = .8
+```
+
+The test verifies the declared scoring policy.
+
+We can test edge cases such as:
+
+* equal scores
+* missing scores
+* conflicting signals
+* duplicate candidates
+* budget overflow
+
+No LLM required.
+
+---
+
+# D12. Budget Tests
+
+Budget fitting is deterministic.
+
+Tests should establish:
+
+```text
+selected tokens <= budget
 ```
 
 and:
 
 ```text
-userPreference
-projectFact
-secretFact
-failedRetrieval
+required tokens remain available
 ```
 
-remain inaccessible unless explicitly declared.
+Additional tests:
 
-No LLM is necessary.
+* exact budget boundary
+* candidate larger than remaining budget
+* required context exceeding budget
+* duplicate items
+* provenance overhead
+* truncation behavior
+
+A failure here should be a software failure, not an LLM evaluation.
 
 ---
 
-# 7. T0 — Default-Deny Regression Test
+# D13. Stage Tests
 
-This deserves its own test.
+Stages have two fundamentally different test categories.
 
-Suppose version 1 contains:
+### Structural stage tests
 
-```text
-M.userPreference
-M.projectFact
-```
+Use a mock LLM.
 
-The Judge contract does not request either.
-
-Later version 2 adds:
+Verify:
 
 ```text
-M.privateNote
+ContextContract
+      ↓
+ContextResolver
+      ↓
+Stage
+      ↓
+structured result
 ```
 
-The resolver must continue producing:
+The mock LLM can return:
+
+```json
+{
+  "interpretation": "database scalability",
+  "confidence": 0.8
+}
+```
+
+This tests orchestration.
+
+### Cognitive stage tests
+
+Use a real model.
+
+Verify:
 
 ```text
-no privateNote
+Does the model actually interpret the query correctly?
 ```
 
-without anyone modifying the Judge contract.
-
-This tests the architectural property we identified earlier:
-
-> New state must not automatically become new context.
-
-This is one of the strongest tests for the architecture.
+That belongs to model evaluation.
 
 ---
 
-# 8. T0 — Context Resolver
+# D14. Mock LLM
 
-The resolver should be as close to a pure function as practical:
+The architecture should provide a deterministic `FakeLanguageModel`.
 
-```text
-R(stage, contract, state) → context
-```
-
-Tests should verify:
-
-### Determinism
-
-Same:
+Example behavior:
 
 ```text
-stage + contract + state
+Input contains "database"
+→ return predefined QueryInterpretation
 ```
 
-produces equivalent context.
+It should also support:
 
-### Isolation
+```text
+success
+malformed JSON
+schema violation
+timeout
+empty response
+refusal
+unexpected fields
+```
 
-Resolver does not mutate state.
-
-### Authorization
-
-Resolver never returns undeclared fields.
-
-### Budget compliance
-
-Returned context remains within budget.
-
-### Ordering
-
-Candidate ordering follows the configured policy.
-
-### Provenance
-
-Every selected item receives its source metadata.
+This lets us test failure handling without model variability.
 
 ---
 
-# 9. T0 — Token Budget
+# D15. Structured Output Tests
 
-This does not require an LLM.
-
-Create synthetic context items:
-
-```text
-A = 500 tokens
-B = 1000
-C = 1500
-D = 2000
-```
-
-Budget:
-
-```text
-2500
-```
+Structured output is a particularly valuable boundary.
 
 Test:
 
 ```text
-required = A
-optional = B,C,D
+LLM response
+    ↓
+parser
+    ↓
+schema validator
+    ↓
+domain object
 ```
 
-Expected:
+Cases:
 
 ```text
-A + selected optional items <= 2500
+valid JSON
+missing field
+wrong type
+extra field
+invalid enum
+null
+truncated JSON
+malformed JSON
 ```
 
-Then test edge cases:
-
-```text
-required > budget
-```
-
-The system needs an explicit policy.
-
-Possible result:
-
-```text
-ContextBudgetExceeded
-```
-
-or controlled truncation.
-
-The important thing is that the behavior is defined and tested.
+These tests require no actual LLM.
 
 ---
 
-# 10. T0 — Memory Write Semantics
+# D16. Epistemic Policy Tests
 
-The write policy can initially operate on structured fake memories.
+This boundary requires more care.
+
+We can test its **mechanics** with mocks:
+
+```text
+EvidencePolicy
+    ↓
+mock evidence
+    ↓
+expected assessment
+```
 
 Example:
 
 ```text
-existing:
-  "User uses Dart"
-
-observation:
-  "User uses Dart"
-```
+Evidence:
+  source A supports claim
+  source B contradicts claim
 
 Expected:
+  contradiction = true
+```
+
+This tests the policy implementation.
+
+It does not prove that an LLM can reliably identify contradictions.
+
+---
+
+# D17. Epistemic Model Evaluation
+
+Actual epistemic capability requires a model.
+
+Tests should include curated cases:
 
 ```text
+Case 1:
+supported claim
+
+Case 2:
+unsupported claim
+
+Case 3:
+conflicting sources
+
+Case 4:
+causal leap
+
+Case 5:
+high-confidence weak evidence
+
+Case 6:
+outdated evidence
+
+Case 7:
+correct answer with misleading supporting evidence
+```
+
+Metrics can include:
+
+* evidence attribution accuracy
+* contradiction detection
+* unsupported inference rate
+* calibration
+* provenance fidelity
+* correction rate
+
+---
+
+# D18. Memory Store Tests
+
+Memory storage should have infrastructure-independent tests.
+
+Use:
+
+```text
+FakeMemoryStore
+```
+
+to test:
+
+```text
+ADD
+UPDATE
+DELETE
+NOOP
+```
+
+and:
+
+* identity
+* versioning
+* provenance
+* timestamps
+* retrieval
+* conflict representation
+
+Then run a separate integration suite against the actual database.
+
+---
+
+# D19. Memory Write Policy Tests
+
+Memory write policy can be tested without persistent infrastructure.
+
+Input:
+
+```text
+Existing memory
++
+New observation
++
+Evidence
+```
+
+Output:
+
+```text
+ADD
+UPDATE
+DELETE
+NOOP
+```
+
+Example:
+
+```text
+Existing:
+"Postgres is used for the application."
+
+Observation:
+"Postgres is used for the application."
+
+Expected:
 NOOP
 ```
 
 Another:
 
 ```text
-existing:
-  "User uses Flutter 3.30"
+Existing:
+"Application uses PostgreSQL 15."
 
-observation:
-  "User uses Flutter 3.32"
-```
+Observation:
+"Application migrated to PostgreSQL 17."
 
 Expected:
-
-```text
-UPDATE
+UPDATE / SUPERSEDE
 ```
 
-or:
-
-```text
-SUPERSEDE
-```
-
-depending on configured semantics.
-
-The test does not need to know how an LLM generated the observation.
+The exact conflict semantics remain a TODO.
 
 ---
 
-# 11. T0 — Persistence Boundary
+# D20. Promotion Tests
 
-Test:
+Promotion is one of the most important isolated tests.
 
-```text
-retrieval result
-      ↓
-Wₜ
-```
-
-and ensure:
+Given:
 
 ```text
-Wₜ ≠ Mₜ
+W_t:
+  failed retrieval
+  hypothesis
+  validated observation
+  tool result
 ```
 
-Then explicitly submit:
+the policy should determine:
 
 ```text
-PromotionRequest
+promote?
 ```
 
-and test:
+The test does not need a database.
 
-```text
-PromotionRequest
-      ↓
-WritePolicy
-      ↓
-Mₜ
-```
-
-This establishes one of the most important system invariants:
-
-> **Encountering information does not imply remembering information.**
+It only needs a deterministic policy and synthetic observations.
 
 ---
 
-# 12. T0 — Provenance
+# D21. Persistence Boundary Test
 
-Create a fake pipeline:
-
-```text
-memory-17
- ↓
-candidate
- ↓
-score = 0.82
- ↓
-contract field = optional.evidence
- ↓
-context
- ↓
-stage
- ↓
-write proposal
-```
-
-Then assert that the resulting trace contains all required links.
-
-For example:
+A critical system invariant:
 
 ```text
-Trace {
-    sourceId
-    candidateId
-    retrievalPolicy
-    retrievalScore
-    contractVersion
-    contextItemId
-    stageId
-    stageInvocationId
-    decisionId
-    writeProposalId
-    writePolicyVersion
-    mutationId
-}
-```
-
-Again, no LLM.
-
----
-
-# 13. T0 — Workflow
-
-The fixed workflow itself can be tested with deterministic stage doubles.
-
-```text
-Interpreter
-    ↓
-Retriever
-    ↓
-Judge
-    ↓
-Synthesizer
-```
-
-Replace every LLM stage with:
-
-```text
-FakeStage
-```
-
-that returns predefined outputs.
-
-Then test:
-
-```text
-Judge = insufficient
-```
-
-causes:
-
-```text
-Retriever retry
+Working Observation
+       │
+       ├── no promotion
+       ▼
+Execution ends
+       │
+       ▼
+Observation absent from M_t
 ```
 
 and:
 
 ```text
-Judge = sufficient
+Working Observation
+       │
+       ├── promotion approved
+       ▼
+Write Policy
+       │
+       ▼
+M_t
 ```
 
-causes:
-
-```text
-Synthesizer
-```
-
-This establishes workflow correctness independently of model quality.
+This test should exist at both unit and integration levels.
 
 ---
 
-# 14. T1 — Mocked Cognitive System
+# D22. Provenance Tests
 
-Now introduce interfaces:
-
-```text
-LLM
-Retriever
-Reranker
-MemoryStore
-EmbeddingProvider
-```
-
-but replace implementations with deterministic fakes.
-
-For example:
-
-```text
-FakeLLM
-```
-
-can implement:
-
-```text
-input → predefined structured response
-```
-
-This allows us to test the **orchestration between intelligence components**.
-
-Example:
-
-```text
-FakeInterpreter
-     ↓
-query = "Dart architecture"
-     ↓
-FakeRetriever
-     ↓
-documents
-     ↓
-FakeJudge
-     ↓
-sufficient
-     ↓
-FakeSynthesizer
-```
-
-The real LLM remains completely absent.
-
----
-
-# 15. T1 — Failure Injection
-
-This is where mocks become especially valuable.
-
-The fake components should deliberately produce failures.
-
-### Retrieval failure
-
-```text
-Retriever → zero results
-```
-
-Test:
-
-```text
-bounded retry
-```
-
-### Contradictory evidence
-
-```text
-Retriever → A + contradictory B
-```
-
-Test:
-
-```text
-Judge detects conflict
-```
-
-### Invalid structured output
-
-```text
-LLM → malformed JSON
-```
-
-Test:
-
-```text
-validation → retry/failure
-```
-
-### Memory write conflict
-
-```text
-WritePolicy → conflicting mutations
-```
-
-Test:
-
-```text
-mutation arbitration
-```
-
-### Context overflow
-
-```text
-Resolver → budget exceeded
-```
-
-Test:
-
-```text
-budget policy
-```
-
-These tests give us much more control than attempting to induce the same situations through a real LLM.
-
----
-
-# 16. T1 — Contract Mutation Tests
-
-This is important for long-term architecture maintenance.
+Provenance can be tested entirely without an LLM.
 
 Given:
 
 ```text
-StageContract v1
+document-17
+retrieval-policy-v2
+score=.83
+stage=retriever
+timestamp=T
 ```
 
-modify:
+the final context item should preserve the expected chain.
+
+Likewise:
 
 ```text
-required
-optional
-tokenBudget
+Observation
+ → promotion
+ → write proposal
+ → memory mutation
 ```
 
-and verify that:
+must remain traceable.
 
-* only intended context changes;
-* provenance identifies the new contract version;
-* stage behavior can be compared across versions.
-
-This enables architectural regression testing.
+A provenance test should fail if an operation loses its origin.
 
 ---
 
-# 17. T2 — Real LLM Tests
+# D23. Workflow Tests
 
-Only now do we introduce an actual LLM.
+The initial fixed workflow is highly testable without models.
 
-These tests answer questions that deterministic tests cannot.
+Given:
+
+```text
+Interpret
+ → Retrieve
+ → Evaluate
+ → Synthesize
+```
+
+test:
+
+```text
+normal path
+
+Evaluate = insufficient
+→ Retrieve
+
+Evaluate = sufficient
+→ Synthesize
+
+Retry limit exceeded
+→ Terminate
+```
+
+These tests should execute with mock stages.
+
+---
+
+# D24. Stage Selection Tests
+
+The same interface should later support a learned router.
+
+For v1:
+
+```text
+FixedWorkflowStageSelectionPolicy
+```
+
+Test the policy using synthetic stage results.
 
 For example:
 
-### Query interpretation
-
-Does the LLM correctly convert:
-
 ```text
-"What happens if the retrieval keeps finding contradictory docs?"
+retrieval_quality = .2
 ```
 
-into the intended structured query representation?
+must trigger the declared retry edge.
 
-### Evidence judgment
-
-Can the model distinguish:
-
-```text
-supporting evidence
-contradictory evidence
-irrelevant evidence
-missing evidence
-```
-
-?
-
-### Memory extraction
-
-Can it distinguish:
-
-```text
-temporary observation
-```
-
-from:
-
-```text
-durable fact
-```
-
-?
-
-### Memory correction
-
-Can it recognize:
-
-```text
-old fact
-+
-new contradictory evidence
-```
-
-as:
-
-```text
-SUPERSEDE
-```
-
-rather than:
-
-```text
-ADD
-```
-
-?
-
-These tests evaluate the intelligence itself.
+No LLM is needed.
 
 ---
 
-# 18. T2 — Prompt / Epistemic Policy Tests
+# D25. End-to-End Mock System
 
-This is where the Spinoza experiment belongs.
-
-Hold everything else constant:
+Before introducing an actual model, the entire architecture should run using:
 
 ```text
-same model
-same documents
-same state
-same ContextContract
-same token budget
-same task
+FakeLanguageModel
+FakeRetrievalPolicy
+FakeMemoryStore
+DeterministicRankingPolicy
+DeterministicBudgetPolicy
+DeterministicWritePolicy
+FixedWorkflow
 ```
 
-Change only:
+This creates a **fully deterministic cognitive-system simulator**.
+
+Its purpose is extremely important.
+
+We can test:
 
 ```text
-Epistemic Policy
+state
+→ context
+→ stage
+→ decision
+→ observation
+→ promotion
+→ memory
+→ next execution
 ```
 
-Compare:
-
-```text
-P0 — ordinary system instruction
-
-P1 — structured epistemic policy
-
-P2 — Spinoza-derived epistemic policy
-```
-
-Then evaluate:
-
-```text
-accuracy
-uncertainty calibration
-contradiction handling
-self-correction
-unsupported claims
-memory decisions
-```
-
-This turns the philosophical idea into an actual experimental variable.
+without any probabilistic component.
 
 ---
 
-# 19. T2 — Retrieval Tests
+# D26. Real Infrastructure Integration
 
-A real retrieval backend becomes necessary here.
+Once the mock system passes, replace boundaries individually.
 
-Compare:
+### Stage 1
 
 ```text
-vector retrieval
-hybrid retrieval
-reranking
-metadata filtering
-temporal filtering
-stage-conditioned retrieval
+FakeMemoryStore
+       ↓
+Real database
 ```
 
-The architecture should remain unchanged.
+### Stage 2
 
-Only the retrieval policy changes.
+```text
+FakeRetrievalPolicy
+       ↓
+Real vector / hybrid retrieval
+```
 
-That is exactly what O6 enables.
+### Stage 3
+
+```text
+FakeLanguageModel
+       ↓
+Real LLM
+```
+
+### Stage 4
+
+```text
+all real
+```
+
+This gives us controlled fault localization.
 
 ---
 
-# 20. T3 — Full System Tests
+# D27. Real LLM Tests
 
-Finally:
+Real-model testing should be isolated from deterministic CI.
+
+A model evaluation suite should record:
 
 ```text
-real LLM
-+
-real embedding model
-+
-real vector/structured store
-+
-real memory
-+
-real workflow
-+
-real tools
+model
+model version
+system prompt
+stage
+context contract
+context
+temperature/configuration
+tool availability
+output
+decision
+evaluation
 ```
 
-Now test emergent behavior.
+The same task set should be repeatable.
+
+---
+
+# D28. Model Evaluation Must Not Become Unit Testing
+
+A test such as:
+
+> "The LLM should return X."
+
+is not an ordinary unit test.
+
+It belongs to model evaluation because output distributions can change with:
+
+* model version
+* prompt
+* context
+* temperature
+* provider
+* quantization
+* inference engine
+
+Therefore:
+
+```text
+Unit test:
+  contract is satisfied.
+
+Model evaluation:
+  model performs desired cognitive behavior.
+```
+
+---
+
+# D29. Vector Database Evaluation
+
+A vector database introduces its own test domain.
+
+### Infrastructure tests
+
+```text
+insert
+update
+delete
+query
+filter
+index
+persistence
+recovery
+```
+
+### Retrieval tests
+
+```text
+known query → expected candidate set
+```
+
+### Quality evaluation
+
+```text
+Recall@k
+Precision@k
+MRR
+NDCG
+```
+
+The third category requires representative data.
+
+---
+
+# D30. RAG Evaluation
+
+RAG evaluation must distinguish:
+
+```text
+retrieval quality
+        ↓
+context quality
+        ↓
+reasoning quality
+        ↓
+answer quality
+```
+
+A correct answer does not prove good retrieval.
+
+A good retrieval result does not prove good reasoning.
+
+This separation should appear in the evaluation harness.
+
+---
+
+# D31. Architecture-Level Experiments
+
+These tests evaluate the architectural hypotheses themselves.
 
 Examples:
 
+### Context contracts
+
 ```text
-multi-turn conversation
-      ↓
-memory formation
-      ↓
-later retrieval
-      ↓
-contradictory new information
-      ↓
-memory correction
-      ↓
-future answer
+Global context
+vs.
+stage-conditioned context
 ```
 
-This is where the complete system can demonstrate value.
+### Retrieval
+
+```text
+semantic-only
+vs.
+hybrid
+vs.
+decision-aware
+```
+
+### Memory
+
+```text
+no memory
+vs.
+retrieval memory
+vs.
+governed memory
+```
+
+### Persistence
+
+```text
+automatic persistence
+vs.
+promotion-gated persistence
+```
+
+### Epistemic governance
+
+```text
+ordinary prompting
+vs.
+structured epistemic policy
+```
+
+These are experiments rather than regression tests.
 
 ---
 
-# 21. Evaluation Matrix
+# D32. Cross-Session Evaluation
 
-The whole testing strategy can therefore be represented as:
+The architecture's long-term claim requires a longitudinal test.
 
-| Component                 |  T0 | T1 Mock | T2 Real | T3 E2E |
-| ------------------------- | :-: | :-----: | :-----: | :----: |
-| State lifecycle           |  ✓  |         |         |        |
-| State isolation           |  ✓  |         |         |        |
-| Mutation authority        |  ✓  |         |         |        |
-| Context Contract          |  ✓  |         |         |        |
-| Default-deny              |  ✓  |         |         |        |
-| Context Resolver          |  ✓  |    ✓    |         |        |
-| Token budget              |  ✓  |         |         |        |
-| Provenance                |  ✓  |    ✓    |         |        |
-| Workflow                  |  ✓  |    ✓    |         |        |
-| Branching                 |  ✓  |    ✓    |         |        |
-| Memory CRUD semantics     |  ✓  |    ✓    |         |        |
-| Promotion                 |  ✓  |    ✓    |         |        |
-| LLM output validation     |     |    ✓    |    ✓    |        |
-| Query interpretation      |     |    ✓    |    ✓    |    ✓   |
-| Evidence judgment         |     |    ✓    |    ✓    |    ✓   |
-| Memory extraction         |     |    ✓    |    ✓    |    ✓   |
-| Semantic retrieval        |     |    ✓    |    ✓    |    ✓   |
-| Embedding quality         |     |         |    ✓    |    ✓   |
-| Prompt policy             |     |         |    ✓    |    ✓   |
-| Spinoza hypothesis        |     |         |    ✓    |    ✓   |
-| Long-term memory quality  |     |         |         |    ✓   |
-| Multi-session behavior    |     |         |         |    ✓   |
-| End-to-end answer quality |     |         |         |    ✓   |
+```text
+Session 1
+   ↓
+Observation
+   ↓
+Memory
+   ↓
+Session 2
+   ↓
+Memory retrieval
+   ↓
+Decision
+   ↓
+Correction
+   ↓
+Updated memory
+   ↓
+Session 3
+```
+
+Measure:
+
+```text
+memory precision
+memory recall
+memory contradiction rate
+correction rate
+future-task performance
+```
+
+The key question:
+
+> Does governed persistence improve future execution?
 
 ---
 
-# 22. Test Fixtures
+# D33. Regression Categories
 
-The architecture should maintain a reusable synthetic world.
+Every discovered failure should be classified.
+
+```text
+STATE
+CONTRACT
+RETRIEVAL
+RANKING
+BUDGET
+STAGE
+MODEL
+EPISTEMIC
+MEMORY
+PROMOTION
+PROVENANCE
+WORKFLOW
+INFRASTRUCTURE
+```
+
+This prevents "the model produced a bad answer" from becoming the generic failure category.
+
+---
+
+# D34. Test Doubles
+
+The implementation should provide explicit test doubles.
+
+```text
+FakeLanguageModel
+FakeRetrievalPolicy
+FakeMemoryStore
+FakeEmbeddingProvider
+FakeClock
+FakeStage
+FakeWorkflow
+FakePolicy
+```
+
+They should be deterministic and inspectable.
+
+A fake should expose the calls it received.
 
 For example:
 
 ```text
-TestWorld
- ├── Memory
- │    ├── M001
- │    ├── M002
- │    └── M003
- │
- ├── Session
- │    ├── goal
- │    ├── history
- │    └── subgoals
- │
- ├── WorkingState
- │    ├── hypotheses
- │    ├── retrieval attempts
- │    └── evidence
- │
- ├── Documents
- │    ├── D001
- │    ├── D002
- │    └── D003
- │
- └── StageContracts
-      ├── Interpreter
-      ├── Retriever
-      ├── Judge
-      └── Synthesizer
+FakeContextResolver.calls
+FakeMemoryStore.mutations
+FakeLLM.requests
 ```
 
-This lets us reproduce entire scenarios without external infrastructure.
+This makes architectural behavior observable.
 
 ---
 
-# 23. Golden Scenarios
+# D35. Contract Tests
 
-We should maintain a small number of deterministic scenarios that exercise the architecture.
+Each interface should have a contract test suite.
 
-### Scenario A — Context isolation
-
-A memory exists that is highly semantically relevant but unauthorized.
-
-Expected:
+For example:
 
 ```text
-never presented
+MemoryStoreContractTests
 ```
 
-### Scenario B — New state field
-
-A new persistent field is introduced.
-
-Expected:
+must be executable against:
 
 ```text
-existing stages cannot see it
+InMemoryMemoryStore
+PostgresMemoryStore
+VectorMemoryStore
+GraphMemoryStore
 ```
 
-### Scenario C — Transient observation
+Each implementation must satisfy the same behavioral contract.
 
-A retrieval result looks useful but is not promoted.
-
-Expected:
+Likewise:
 
 ```text
-available during execution
-absent next session
+RetrievalPolicyContractTests
 ```
 
-### Scenario D — Memory update
-
-New evidence supersedes old evidence.
-
-Expected:
+can run against:
 
 ```text
-old memory preserved as history
-new memory becomes current
+FakeRetrievalPolicy
+HybridRetrievalPolicy
+VectorRetrievalPolicy
+LearnedRetrievalPolicy
 ```
 
-### Scenario E — Contradiction
-
-Two documents disagree.
-
-Expected:
-
-```text
-Judge receives both
-provenance identifies both
-write policy does not silently choose one
-```
-
-### Scenario F — Retrieval failure
-
-No sufficient evidence.
-
-Expected:
-
-```text
-bounded retry
-```
-
-### Scenario G — Context overflow
-
-Required context exceeds budget.
-
-Expected:
-
-```text
-explicit failure
-```
-
-rather than silent truncation.
+This is critical for the replaceable-policy objective.
 
 ---
 
-# 24. What We Can Build Before Any LLM
+# D36. Determinism
 
-This is the practical payoff.
-
-We can implement and test a substantial portion of the architecture immediately:
+The deterministic test suite should guarantee:
 
 ```text
-State
-StateRepository
-StateLifecycle
-MutationAuthority
-ContextContract
-ContextAuthorization
-ContextResolver
-TokenBudget
-CandidateScoring
-MemoryOperations
-PromotionPolicy
-Provenance
-Trace
-Workflow
-Branching
-Policy interfaces
+same input
++
+same state
++
+same configuration
+=
+same result
+```
+
+Where randomness is required, the test must control the seed.
+
+Real LLM evaluation naturally operates outside this guarantee.
+
+---
+
+# D37. Observability as a Testing Dependency
+
+The architecture's provenance requirement means observability is not merely operational tooling.
+
+It is part of the test surface.
+
+A test should be able to inspect:
+
+```text
+ExecutionTrace
+    │
+    ├── state version
+    ├── stage
+    ├── contract
+    ├── candidates
+    ├── ranking
+    ├── selected context
+    ├── model invocation
+    ├── stage decision
+    ├── promotion decision
+    ├── write proposal
+    └── final mutation
+```
+
+This allows assertions about **why**, rather than only **what**.
+
+---
+
+# D38. CI Structure
+
+The test suite should be divided into execution classes.
+
+```text
+tests/
+├── unit/
+│   ├── state/
+│   ├── contracts/
+│   ├── policies/
+│   ├── provenance/
+│   └── schemas/
+│
+├── component/
+│   ├── context/
+│   ├── workflow/
+│   ├── memory/
+│   └── stages/
+│
+├── contract/
+│   ├── memory_store/
+│   ├── retrieval/
+│   └── model/
+│
+├── integration/
+│   ├── database/
+│   ├── retrieval/
+│   └── model/
+│
+└── evaluation/
+    ├── rag/
+    ├── memory/
+    ├── epistemic/
+    └── longitudinal/
+```
+
+---
+
+# D39. CI Tiers
+
+### Tier 0 — Every commit
+
+```text
+pure unit
+schema
+state
+contracts
+permissions
+workflow
+provenance
+```
+
+No network.
+
+No model.
+
+No database.
+
+Fast.
+
+---
+
+### Tier 1 — Pull request
+
+```text
+component tests
+fake integrations
+contract tests
+in-memory end-to-end
+```
+
+Still deterministic.
+
+---
+
+### Tier 2 — Integration
+
+```text
+real database
+real vector store
+real embedding service
+```
+
+Executed in controlled environments.
+
+---
+
+### Tier 3 — Model evaluation
+
+```text
+real LLM
+real prompts
+real context
+representative tasks
+```
+
+Results are recorded rather than treated as ordinary deterministic assertions.
+
+---
+
+### Tier 4 — Research evaluation
+
+```text
+architecture comparisons
+ablation studies
+longitudinal memory experiments
+model comparisons
+policy comparisons
+```
+
+These produce experimental datasets.
+
+---
+
+# D40. What Must Be Tested Before Tomorrow's Implementation Is Considered Valid
+
+The initial implementation should not require an LLM to establish that the architecture works.
+
+At minimum:
+
+### State
+
+* lifetime semantics
+* mutation authority
+* persistence boundary
+
+### Context
+
+* closed-world contracts
+* required/optional handling
+* budget enforcement
+* provenance
+
+### Workflow
+
+* fixed graph
+* bounded branching
+* retry
+* termination
+
+### Memory
+
+* CRUD semantics
+* promotion boundary
+* conflict representation
+* provenance
+
+### Policies
+
+* policy replacement
+* deterministic behavior
+* policy decision tracing
+
+### End-to-end
+
+A complete execution should be able to run with:
+
+```text
 FakeLLM
 FakeRetriever
 FakeMemoryStore
 ```
 
-The architecture can therefore reach a substantial degree of maturity **before downloading a model or configuring a vector database**.
-
-That is useful because architectural bugs become dramatically harder to diagnose once model behavior and retrieval uncertainty enter the system.
-
----
-
-# 25. What Explicitly Requires Real Infrastructure
-
-Some questions cannot be meaningfully answered with mocks.
-
-### Requires a real LLM
+and demonstrate:
 
 ```text
-reasoning quality
-query interpretation quality
-evidence judgment quality
-memory extraction quality
-epistemic policy effectiveness
-prompt sensitivity
-self-correction
-```
-
-### Requires real embeddings/retrieval
-
-```text
-semantic retrieval quality
-embedding representation quality
-hybrid retrieval effectiveness
-retrieval recall
-reranking effectiveness
-```
-
-### Requires persistent infrastructure
-
-```text
-concurrent memory mutation
-durability
-transaction behavior
-index consistency
-temporal queries
-large-scale retrieval
-```
-
-### Requires the complete system
-
-```text
-long-horizon memory quality
-multi-session behavior
-memory pollution
-end-to-end retrieval/refinement loops
-real-world answer quality
+User objective
+      ↓
+workflow
+      ↓
+stage
+      ↓
+context resolution
+      ↓
+decision
+      ↓
+working observation
+      ↓
+promotion
+      ↓
+memory mutation
+      ↓
+next execution
 ```
 
 ---
 
-# 26. The Testing Principle
+# D41. What We Must **Not** Claim From Those Tests
 
-The architecture should follow one strict rule:
+Passing the deterministic suite does **not** establish:
 
-> **Do not use an LLM to test a property that can be tested deterministically.**
+* that retrieval is semantically good
+* that the LLM reasons correctly
+* that epistemic governance improves reasoning
+* that memory improves future performance
+* that stage-specific context improves task performance
+* that persistent memory remains correct over long periods
 
-If the question is:
+Those require empirical evaluation.
 
-> "Does a Judge stage have access to a field it is forbidden to read?"
-
-use a deterministic test.
-
-If the question is:
-
-> "Can the Judge correctly identify contradictory evidence?"
-
-use an LLM evaluation.
-
-Likewise:
-
-> "Does the resolver respect the token budget?"
-
-is deterministic.
-
-> "Does the resolver select context that improves the Judge's decision?"
-
-requires a model.
-
-That separation prevents us from confusing **architectural correctness** with **model intelligence**.
+This distinction should remain explicit in the project.
 
 ---
 
-# 27. Recommended Development Order
+# D42. Testing Principle
+
+The complete strategy can be summarized as:
 
 ```text
-Phase 0
-Pure domain model
-        ↓
-Phase 1
-State + authority
-        ↓
-Phase 2
-Context Contracts + Resolver
-        ↓
-Phase 3
-Memory promotion + write semantics
-        ↓
-Phase 4
-Provenance + tracing
-        ↓
-Phase 5
-Deterministic workflow
-        ↓
-Phase 6
-Fake LLM / fake retriever
-        ↓
-Phase 7
-Real LLM
-        ↓
-Phase 8
-Real retrieval
-        ↓
-Phase 9
-Full-system evaluation
-        ↓
-Phase 10
-Learned policy experiments
+                   "Does the code obey its contract?"
+                                │
+                                ▼
+                         Unit / Component
+                                │
+                                ▼
+                   "Do boundaries interact correctly?"
+                                │
+                                ▼
+                         Contract / Integration
+                                │
+                                ▼
+                   "Does the model perform the task?"
+                                │
+                                ▼
+                         Model Evaluation
+                                │
+                                ▼
+                  "Does the architecture improve
+                    the cognitive system?"
+                                │
+                                ▼
+                       Research Evaluation
 ```
 
-The important consequence is that **the first six phases can be developed as an ordinary deterministic software system**.
+## C1 — Binding Rule
 
-Only after those invariants pass do we introduce the probabilistic components.
+> **Use mocks to test architecture. Use real infrastructure to test infrastructure. Use real models to test model behavior. Use complete experimental systems to test architectural hypotheses.**
 
-That gives us a clean experimental boundary:
-
-```text
-                    ARCHITECTURE
-                         │
-          ┌──────────────┴──────────────┐
-          │                             │
-   Deterministic correctness       Intelligence
-          │                             │
-       T0 / T1                      T2 / T3
-          │                             │
-          └──────────────┬──────────────┘
-                         │
-                  System evaluation
-```
-
-This also gives the research program a much cleaner structure: **first prove that the machine obeys its architecture; then determine whether the cognitive policies operating inside that machine make it better.**
+That separation should prevent the project from falling into two common traps: building an expensive LLM-dependent test suite for ordinary software, and mistaking successful orchestration tests for evidence that the cognitive architecture itself works.
