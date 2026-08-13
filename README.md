@@ -1,50 +1,39 @@
-# RAG-ARCHITECTURE-RESEARCH
+# A Governed Cognitive Architecture for Retrieval-Augmented Agents
 
-Architecture Specification: Stateful, Stage-Conditioned Agentic Retrieval
+## State, Context, Epistemic Policy, and Controlled Memory
 
-Status: Architecture baseline
-Version: 0.1
-Scope: Agentic RAG, conversational memory, persistent memory, multi-stage reasoning
-Design posture: Evidence-informed, deliberately conservative
-Open research: Coupled read/action/write optimization, learned routing, memory governance
+### Abstract
 
+Retrieval-augmented generation has evolved from a relatively simple retrieval-and-generation pattern into systems containing persistent memory, multi-stage reasoning, tool use, corrective retrieval, context management, and autonomous state mutation. This evolution creates an architectural problem that is poorly captured by the conventional distinction between "RAG" and "agent."
 
----
+The central problem is **governance of information and reasoning across an agent's execution lifecycle**.
 
-Abstract
+A capable agent must determine:
 
-This document specifies an architecture for a stateful LLM agent in which persistent memory, session state, execution state, conversational history, retrieval, and multi-stage reasoning operate as distinct architectural concerns.
+1. what state exists and how long it should live;
+2. what information a cognitive stage may see;
+3. why that information was selected;
+4. how the stage should interpret evidence;
+5. what action follows from that interpretation;
+6. what transient observations deserve persistence;
+7. how existing memories should be corrected, superseded, or discarded;
+8. and how the entire chain can remain inspectable.
 
-The architecture is motivated by a recurring failure in conventional RAG systems: the system treats retrieved information as a single context stream and repeatedly exposes different cognitive operations to approximately the same information. This creates context pollution, duplicated retrieval logic, uncontrolled memory growth, and unclear mutation boundaries.
+This paper proposes an architecture organized around **state isolation, stage-conditioned context, centralized context resolution, explicit mutation authority, controlled persistence, replaceable policies, provenance, and epistemic governance**.
 
-The proposed architecture introduces four explicit abstractions:
+The architecture deliberately begins with deterministic mechanisms and a fixed workflow with bounded conditional branching. Learned planners, learned memory policies, and joint policy optimization remain replaceable research extensions rather than architectural prerequisites.
 
-1. State — information maintained by the agent across execution boundaries.
+A further hypothesis is introduced: LLM performance may benefit from an explicit **epistemic constitution** governing the distinction between observation, evidence, hypothesis, inference, uncertainty, belief, and action. Spinoza's *Treatise on the Emendation of the Intellect* is proposed as one candidate source for such a constitution because the work explicitly develops a method concerned with modes of perception, distinguishing true, fictitious, and false ideas, doubt, memory, clear and distinct ideas, definitions, and the ordered acquisition of understanding. The Treatise is unfinished, so its use here is an engineering interpretation rather than a claim that Spinoza provides an AI architecture. ([Project Gutenberg][1])
 
-
-2. Stage — an LLM-controlled cognitive operation with an independent objective.
-
-
-3. Context Contract — a declaration of what information a stage may consume.
-
-
-4. Context Resolver — one shared mechanism that projects agent state into stage-specific context.
-
-
-
-State mutation and context access are deliberately separated into independent permission systems.
-
-The initial execution model uses a fixed workflow with bounded conditional branches. Dynamic planning and learned stage routing remain replaceable future extensions rather than architectural prerequisites.
-
-The architecture does not claim that coupled read/write/action optimization is solved. Current research identifies that as a frontier problem. The implementation therefore adopts deterministic mechanisms first and preserves interfaces through which learned policies can later replace them.
-
+The paper therefore defines an architecture **without assuming that the proposed policies are optimal**. It identifies known constraints, competing approaches, unresolved questions, and an experimental program capable of falsifying the central design assumptions.
 
 ---
 
-1. Problem Definition
+# 1. Problem Definition
 
 Conventional RAG can be represented approximately as:
 
+```text
 User Query
     │
     ▼
@@ -58,1739 +47,1550 @@ LLM
     │
     ▼
 Answer
+```
 
-Agentic retrieval introduces iterative operations:
+This abstraction becomes inadequate once the system acquires:
 
-Query
-  │
-  ▼
-Retrieve
-  │
-  ▼
-Assess
-  │
-  ├── insufficient ──► Refine ──► Retrieve
-  │
-  └── sufficient
-          │
-          ▼
-        Answer
+```text
+conversation history
+persistent memory
+working hypotheses
+multiple cognitive stages
+tool outputs
+retrieval attempts
+correction loops
+memory mutation
+```
 
-A persistent agent introduces additional information:
+The system instead becomes:
 
-Conversation
-Memory
-RAG
-Tool results
-Current plan
-Previous attempts
-Current hypotheses
+```text
+                         ┌───────────────┐
+                         │ Persistent M  │
+                         └───────┬───────┘
+                                 │
+Conversation ──► Session State ──┼──► Working State
+                                 │
+                                 ▼
+                         Context Resolution
+                                 │
+                     ┌───────────┼───────────┐
+                     ▼           ▼           ▼
+                 Stage A      Stage B      Stage C
+                     │           │           │
+                     └───────────┼───────────┘
+                                 ▼
+                              Decision
+                                 │
+                         ┌───────┴────────┐
+                         ▼                ▼
+                       Action          Observation
+                                          │
+                                          ▼
+                                    Write Proposal
+                                          │
+                                          ▼
+                                     Write Policy
+                                          │
+                                          ▼
+                                     Persistent M
+```
 
-The architectural problem becomes:
+The architectural problem is therefore no longer merely retrieval.
 
-> Which information should each cognitive operation receive, which information may it modify, and which information should survive the current execution?
+It is:
 
-
-
-Treating all of these as one context creates an implicit and poorly controlled state-management system.
-
+> **How should information, reasoning, action, and persistent state be governed across a multi-stage LLM execution?**
 
 ---
-Yes. The objectives become much stronger if each one states **the architectural problem it exists to solve**. Otherwise they read like desirable properties rather than requirements derived from failure modes.
-
-I would rewrite the section as follows.
 
 # 2. Design Objectives
 
-The architecture is designed around a central problem:
-
-> **A stateful RAG system does more than retrieve documents. It continuously decides what information exists, what information each cognitive operation may see, what actions the system should take, and what transient observations deserve persistence.**
-
-Those decisions have different lifetimes, authorities, and failure modes. The architecture therefore establishes the following objectives.
-
----
-
 ## O1 — State isolation
 
-**Objective:** Different classes of state must have explicit lifetime and mutation semantics.
+Different classes of state must have explicit lifetime and mutation semantics.
 
-### Why
-
-A pipeline simultaneously handles information with fundamentally different lifetimes:
-
-* persistent knowledge that should survive sessions;
-* session state that belongs to the current interaction;
-* execution state that exists only while solving the current task.
-
-Treating these as one undifferentiated state object creates ambiguous ownership.
-
-For example, if a retrieval result is placed into the same state structure as a durable user preference, the architecture has no intrinsic answer to:
-
-> Should this information survive the execution?
-
-Likewise, if every stage can mutate the same state object, mutation authority becomes implicit.
-
-The architecture therefore separates state according to **lifetime and mutation ownership**, currently:
-
-```text
-M_t       Persistent state
-G_t/H_t   Session state
-W_t       Working / execution state
-```
-
-The purpose is not taxonomy. The purpose is to establish enforceable boundaries.
-
----
+The architecture should distinguish durable memory, session state, and execution-local working state.
 
 ## O2 — Stage-specific context
 
-**Objective:** Each cognitive operation receives context appropriate to its objective.
+Each cognitive operation should receive context appropriate to its objective.
 
-### Why
-
-Different stages solve different problems.
-
-A query interpreter may need:
-
-```text
-conversation
-current objective
-relevant user/project preferences
-```
-
-A retrieval judge may need:
-
-```text
-query
-retrieved evidence
-retrieval history
-evaluation criteria
-```
-
-A generator may need:
-
-```text
-validated evidence
-current objective
-output constraints
-```
-
-Giving all three the same context creates two problems:
-
-1. **Context pollution:** irrelevant information competes for model attention.
-2. **Context leakage:** information available to one cognitive operation becomes implicitly available to another.
-
-Therefore context should be a **function of the stage's objective**, rather than a dump of available state.
-
----
+A retrieval judge, query interpreter, memory manager, and answer synthesizer should not receive identical context merely because they participate in the same execution.
 
 ## O3 — Centralized context resolution
 
-**Objective:** Stages should declare information requirements rather than implement independent retrieval mechanisms.
+Stages should declare information requirements rather than implement independent retrieval mechanisms.
 
-### Why
-
-Without centralization, each stage eventually develops its own version of:
+The architecture should have one context-resolution mechanism:
 
 ```text
-retrieve()
-searchMemory()
-getRelevantDocuments()
-loadHistory()
+R(stage, contract, S_t) → C_t^stage
 ```
-
-That produces retrieval drift.
-
-For example:
-
-```text
-Interpreter → vector search
-Retriever   → hybrid search
-Judge       → another vector search
-Generator   → memory API
-```
-
-After enough iterations, nobody can state precisely why each stage received its particular context.
-
-Centralization gives us:
-
-```text
-Stage
-  │
-  │ ContextContract
-  ▼
-ContextResolver
-  │
-  ├── state
-  ├── memory
-  ├── retrieval
-  ├── scoring
-  └── token budget
-  │
-  ▼
-Stage Context
-```
-
-The stage declares **what it requires**.
-
-The resolver determines **how that information is obtained and assembled**.
-
-This also creates the architectural seam required for replacing deterministic retrieval with learned retrieval later.
-
----
 
 ## O4 — Explicit mutation authority
 
-**Objective:** Persistent memory cannot be modified merely because a stage can read it.
+The ability to read persistent memory must not imply the ability to modify it.
 
-### Why
-
-Read access and write access have fundamentally different consequences.
-
-A stage may need to know:
-
-> "The user prefers PostgreSQL."
-
-That does not imply that the stage should be able to change:
-
-```text
-M_t.user_preferences
-```
-
-If read and write authority are coupled, any stage that receives persistent memory becomes a potential memory editor.
-
-That makes memory corruption an emergent property of ordinary pipeline execution.
-
-The architecture therefore separates:
-
-```text
-Read authority
-     ≠
-Mutation authority
-```
-
-For example:
-
-```text
-RetrievalJudge
-    READ  → M_t.project_facts
-    WRITE → W_t.judgement
-
-MemoryManager
-    READ  → M_t
-    WRITE → M_t
-```
-
-The distinction should exist at the architecture/runtime level rather than depend on an instruction such as "please don't modify memory."
-
----
+Read authority and mutation authority are separate architectural concerns.
 
 ## O5 — Controlled persistence
 
-**Objective:** Transient observations become persistent memories only through an explicit promotion mechanism.
-
-### Why
-
-An agent generates enormous amounts of information during execution:
-
-```text
-retrieval results
-failed searches
-hypotheses
-intermediate interpretations
-tool outputs
-draft conclusions
-temporary reasoning
-```
-
-Most of this should disappear.
-
-If the system automatically persists interesting-looking observations, memory accumulates:
-
-```text
-useful information
-+
-temporary information
-+
-incorrect hypotheses
-+
-duplicates
-+
-obsolete information
-```
-
-The resulting memory becomes progressively less trustworthy.
-
-Therefore:
-
-```text
-W_t
- │
- │ candidate
- ▼
-Write Policy
- │
- ├── ADD
- ├── UPDATE
- ├── SUPERSEDE
- ├── DELETE
- └── NOOP
- │
- ▼
-M_t
-```
-
-Persistence becomes a **decision**, rather than a side effect of execution.
-
----
+Transient observations should become persistent memory only through an explicit promotion mechanism.
 
 ## O6 — Replaceable policies
 
-**Objective:** Deterministic mechanisms should be replaceable with learned policies without restructuring the state architecture.
+Deterministic mechanisms should be replaceable with learned policies without restructuring the state architecture.
 
-### Why
+## O7 — Debuggability and provenance
 
-The architecture should distinguish **where a decision happens** from **how the decision is made**.
-
-For example:
-
-```text
-ContextResolver
-      │
-      └── SelectionPolicy
-             ├── deterministic v1
-             ├── heuristic v2
-             └── learned v3
-```
-
-Likewise:
-
-```text
-WritePolicy
-      │
-      ├── deterministic
-      ├── LLM-assisted
-      └── learned/RL
-```
-
-This matters because the research frontier is moving toward learned memory management and context selection.
-
-The architecture should therefore permit:
-
-```text
-same state
-same contracts
-same interfaces
-different policy
-```
-
-without requiring a redesign of the system.
-
-This also supports controlled experimentation: a learned policy can replace a deterministic baseline while the rest of the architecture remains constant.
-
----
-
-## O7 — Debuggability
-
-**Objective:** The system should expose enough intermediate state to explain:
+The system should expose enough intermediate state to explain:
 
 * why something was retrieved;
-* why it was presented to a stage;
+* why it was presented;
 * why a stage acted;
-* why something became memory.
+* why an observation became memory;
+* what evidence supported a conclusion;
+* what transformed one representation into another.
 
-### Why
-
-Agentic failures often produce a valid-looking final answer while the underlying decision path is wrong.
-
-Consider:
-
-```text
-Bad answer
-   ↓
-wrong evidence
-   ↓
-wrong context selection
-   ↓
-wrong memory retrieved
-   ↓
-memory was incorrectly written three sessions earlier
-```
-
-A final-output log cannot identify the failure.
-
-The architecture therefore needs provenance across the entire path:
-
-```text
-Memory
-   ↓
-candidate generation
-   ↓
-retrieval score
-   ↓
-ContextContract
-   ↓
-context selection
-   ↓
-stage invocation
-   ↓
-stage decision
-   ↓
-write proposal
-   ↓
-write policy
-   ↓
-persistent mutation
-```
-
-This makes the system inspectable at the **decision boundary**, rather than merely observable at the API boundary.
-
-A useful invariant is:
-
-> Every persistent mutation and every context inclusion should have an attributable reason.
-
----
+Recent work on agent provenance independently identifies evidence tracing across retrieval, memory, tool outputs, intermediate claims, actions, and final answers as an emerging requirement for trustworthy agent systems. ([arXiv][2])
 
 ## O8 — Controlled complexity
 
-**Objective:** The architecture should not introduce a planner, learned router, memory-RL system, or additional LLM invocation until an observed failure justifies it.
+The architecture should not introduce a planner, learned router, memory-RL system, or additional LLM invocation until an observed failure justifies it.
 
-### Why
+## O9 — Epistemic coherence
 
-Each additional intelligent component introduces another source of:
-
-* latency;
-* token consumption;
-* nondeterminism;
-* coordination failure;
-* debugging complexity;
-* evaluation burden.
-
-There is a strong architectural temptation to solve uncertainty by adding another agent:
+The system should provide an explicit framework governing how stages distinguish:
 
 ```text
-Retriever
-    ↓
-Judge
-    ↓
-Planner
-    ↓
-Memory Agent
-    ↓
-Context Agent
-    ↓
-Router
-```
-
-That can make the architecture appear more capable while making causal attribution harder.
-
-The baseline therefore uses:
-
-```text
-fixed workflow
-+
-local conditional branches
-+
-deterministic policies
-```
-
-A more sophisticated mechanism enters only after an observed failure establishes a need for it.
-
-For example:
-
-```text
-Fixed workflow
-      │
-      ├── works → keep
-      │
-      └── observed failure
-              ↓
-        identify missing capability
-              ↓
-        introduce smallest mechanism
-              ↓
-        evaluate against baseline
-```
-
-This makes complexity **evidence-driven**.
-
----
-
-# C: The objectives form a dependency structure
-
-There is also a useful hierarchy here.
-
-```text
-                    O1
-              State isolation
-                     │
-          ┌──────────┴──────────┐
-          ▼                     ▼
-         O4                    O5
- Mutation authority       Controlled persistence
-          │                     │
-          └──────────┬──────────┘
-                     ▼
-                    O3
-          Centralized resolution
-                     │
-                     ▼
-                    O2
-          Stage-specific context
-                     │
-          ┌──────────┴──────────┐
-          ▼                     ▼
-         O6                    O7
- Replaceable policies      Debuggability
-          │                     │
-          └──────────┬──────────┘
-                     ▼
-                    O8
-          Controlled complexity
-```
-
-This exposes something important.
-
-**O8 is not merely another feature. It governs how the other objectives evolve.**
-
-The architecture establishes strong boundaries first:
-
-```text
-state
-authority
-context
-persistence
-```
-
-Then it allows increasingly sophisticated policies to inhabit those boundaries.
-
-That gives us a useful architectural principle:
-
-> **Increase decision intelligence without increasing architectural entanglement.**
-
-That, I think, is a better statement of what the architecture is trying to achieve than "build a better RAG pipeline."
-
-
----
-
-3. Conceptual Model
-
-The system state is:
-
-S_t = {M_t, G_t, H_t, W_t}
-
-where:
-
-M_t = persistent cross-session memory;
-
-G_t = current goal/subgoal state;
-
-H_t = session conversation/history state;
-
-W_t = execution-scoped working state.
-
-
-For practical implementation, G_t and H_t may share a session store while remaining conceptually distinct.
-
-
----
-
-4. State Model
-
-4.1 Persistent Memory — M_t
-
-M_t survives sessions.
-
-Examples:
-
-durable facts
-validated preferences
-procedures
-validated experiences
-project knowledge
-learned constraints
-
-The defining property is controlled mutation.
-
-Stage
-  │
-  │ read
-  ▼
-M_t
-
-Stage
-  │
-  │ write request
-  ▼
-Write Policy
-  │
-  ├── ADD
-  ├── UPDATE
-  ├── DELETE
-  └── NOOP
-  │
-  ▼
-M_t+1
-
-A stage does not directly mutate M_t.
-
-
----
-
-4.2 Session State — G_t / H_t
-
-This state survives individual stage invocations but expires with the session.
-
-G_t
-
-Current task state:
-
-goal
-subgoals
+observation
+evidence
 interpretation
-plan
-constraints
-progress
+hypothesis
+inference
+belief
+uncertainty
+contradiction
+decision
+```
 
-H_t
-
-Conversation state:
-
-messages
-conversation references
-session events
-interaction history
-
-Mutation is primarily controlled by interpretation/planning/session-management operations.
-
+The purpose is not philosophical ornamentation. It is to establish a stable method for interpreting information and producing traceable decisions.
 
 ---
 
-4.3 Working State — W_t
+# 3. Agent State
 
-W_t exists for one execution.
+The state model uses two independent dimensions:
+
+1. **lifetime**;
+2. **mutation authority**.
+
+This avoids creating an unnecessarily elaborate memory taxonomy.
+
+### 3.1 Persistent state — Mₜ
+
+```text
+Mₜ
+```
+
+Cross-session information that the system deliberately preserves.
 
 Examples:
 
-current hypotheses
-retrieval attempts
-failed queries
-candidate documents
-tool results
-intermediate evidence
-temporary assessments
-unresolved contradictions
+```text
+validated facts
+durable user/project information
+validated procedures
+learned operational experience
+established relationships
+```
 
-At execution termination:
+Mutation requires the write policy.
 
-W_t → discard
+---
 
-unless the write policy explicitly promotes information:
+### 3.2 Session state — Gₜ / Hₜ
 
-W_t
- │
- ▼
+Current conversational and objective state.
+
+Examples:
+
+```text
+current goal
+subgoals
+conversation history
+current interpretation
+active constraints
+session decisions
+```
+
+Selected cognitive stages may mutate this state.
+
+---
+
+### 3.3 Working state — Wₜ
+
+Execution-local information.
+
+Examples:
+
+```text
+retrieval candidates
+failed searches
+temporary hypotheses
+intermediate tool results
+candidate interpretations
+unconfirmed observations
+```
+
+The default lifecycle is:
+
+```text
+execution begins
+      ↓
+Wₜ created
+      ↓
+stages operate
+      ↓
+execution terminates
+      ↓
+Wₜ discarded
+```
+
+Promotion requires an explicit write decision:
+
+```text
+Wₜ
+ ↓
+Write Proposal
+ ↓
+Epistemic Assessment
+ ↓
 Write Policy
- │
- ▼
-M_t+1
+ ↓
+Mₜ
+```
 
-This prevents every retrieved document or intermediate hypothesis from becoming long-term memory.
-
+This creates an explicit persistence boundary.
 
 ---
 
-5. Mutation Authority
+# 4. What Constitutes a Stage?
 
-State lifetime and state mutation authority are separate concepts.
+A stage is not merely a pipeline function.
 
-The architecture therefore defines:
+A **stage is a point at which an LLM exercises meaningful discretion under a distinct success criterion**.
 
-MutationAuthority
-
-independently from:
-
-ReadContract
+Deterministic operations should remain code.
 
 For example:
 
-Retriever
-    read: M, G, H
-    write: W
+```text
+JSON parsing       → code
+schema validation  → code
+sorting            → code
+deduplication      → code
+```
 
-Judge
-    read: M, G, H, W
-    write: W
+Whereas:
 
-Memory Manager
-    read: M, G, H, W
-    write: M
+```text
+query interpretation
+retrieval sufficiency judgment
+hypothesis generation
+evidence assessment
+answer synthesis
+memory evaluation
+```
 
-A component's ability to read persistent memory therefore does not imply an ability to modify it.
+may constitute cognitive stages.
 
+A useful operational criterion is:
 
----
+> Two adjacent operations constitute separate stages when different context materially changes their performance or when their success criteria can be independently optimized.
 
-6. Read Authority
-
-Read authority belongs to the stage context contract.
-
-This is deliberately separate from mutation authority.
-
-Read authority
-    ↓
-Context Contract / Resolver
-
-Mutation authority
-    ↓
-State layer / Write Policy
-
-These systems should have independent configuration and versioning.
-
-A stage's prompt or context requirements may change frequently.
-
-Its persistent-memory mutation authority should change much less frequently.
-
+This provides a mechanism for preventing uncontrolled proliferation of LLM stages.
 
 ---
 
-7. Stage Definition
+# 5. Context Contracts
 
-A stage is an LLM-controlled decision point with an independently meaningful success criterion.
+Each cognitive stage declares a **Context Contract**.
 
-Deterministic transformations remain code.
-
-For example:
-
-JSON parsing        → code
-schema validation   → code
-sorting             → code
-deduplication       → code
-
-query interpretation → stage
-retrieval strategy   → stage
-evidence assessment  → stage
-answer synthesis     → stage
-memory decision      → stage/policy
-
-The architecture avoids decomposing every logical operation into an LLM invocation.
-
-A useful empirical criterion is:
-
-> Two adjacent operations should become separate stages when different context or independent optimization measurably changes their performance.
-
-
-
-This provides an experimental basis for stage decomposition.
-
-
----
-
-8. Context Contract
-
-Each stage declares its information requirements.
-
-ContextContract {
+```text
+ContextContract
+{
     required
     optional
-    excluded
     tokenBudget
 }
+```
 
-The intended semantics are:
+The architecture uses a closed-world interpretation.
 
-Required
+Anything not declared is inaccessible.
 
-The stage depends on this information.
+```text
+required ∪ optional = permitted context
+everything else = denied
+```
 
-missing → stage cannot execute
-
-Optional
-
-The information can improve the stage but is subject to selection and budget.
-
-candidate → utility scoring → inclusion decision
-
-Excluded
-
-The information is explicitly prohibited.
-
-excluded → resolver veto
-
-
----
-
-9. Closed-World Context Policy
-
-A correction is required here.
-
-The architecture should not treat unspecified fields as optional.
-
-The default must be:
-
-> Deny unless declared.
-
-
-
-Therefore:
-
-required ∪ optional
-        ↓
-candidate information
-
-everything else
-        ↓
-unavailable
-
-excluded becomes a defense-in-depth mechanism rather than the primary security boundary.
+This is stronger than an exclusion list because newly introduced state does not automatically become visible to existing stages.
 
 For example:
 
-JudgeContract {
+```text
+RetrievalJudgeContract
 
-    required:
-        interpreted_query
-        retrieved_evidence
+required:
+    current_query
+    retrieved_documents
+    retrieval_scores
 
-    optional:
-        retrieval_history
-        source_reliability
+optional:
+    previous_attempts
+    relevant_memory
+    query_interpretation
 
-    excluded:
-        pending_memory_mutations
-}
+tokenBudget:
+    6000
+```
 
-A newly added state field does not automatically become visible to the Judge.
+A memory-management stage could receive:
 
-The contract must explicitly grant access.
+```text
+MemoryManagerContract
 
-This prevents silent context leakage caused by future schema expansion.
+required:
+    write_proposal
+    evidence
+    provenance
 
+optional:
+    related_memories
+    historical_conflicts
+
+tokenBudget:
+    4000
+```
+
+The two stages therefore operate over the same system state while receiving materially different projections of that state.
 
 ---
 
-10. Context Resolver
+# 6. Context Resolution
 
-The architecture uses one shared resolver:
+Context assembly becomes a centralized operation:
 
-R(stage, contract, S_t) → C_t^s
+```text
+R(stage, contract, Sₜ) → Cₜˢ
+```
 
-where:
+The resolver:
 
-stage identifies the cognitive operation;
-
-contract specifies its information requirements;
-
-S_t contains available state;
-
-C_t^s is the resulting stage context.
-
+1. obtains required information;
+2. retrieves optional candidates;
+3. scores candidates against stage utility;
+4. fits candidates to the token budget;
+5. attaches provenance;
+6. produces the stage context.
 
 The resolver is pure:
 
-R(...) does not mutate S_t
+```text
+read state
+    ↓
+compute projection
+    ↓
+return context
+```
 
+It does not mutate memory.
 
----
+This separation is deliberate:
 
-11. Context Resolution Algorithm
+```text
+READ
+R(stage, contract, Sₜ)
+       │
+       ▼
+    context
 
-Conceptually:
+WRITE
+proposal
+       │
+       ▼
+write policy
+       │
+       ▼
+persistent state
+```
 
-resolve(stage, contract, state):
-
-    required = resolveRequired(
-        contract.required,
-        state
-    )
-
-    candidates = resolveOptional(
-        contract.optional,
-        state
-    )
-
-    ranked = score(
-        candidates,
-        stage.goal
-    )
-
-    selected = fitBudget(
-        ranked,
-        contract.tokenBudget
-    )
-
-    return ContextBundle(
-        required,
-        selected
-    )
-
-Excluded information never enters the candidate set.
-
+Current agent-context research increasingly treats relevance, sufficiency, isolation, economy, and provenance as separate properties of context rather than treating context as an undifferentiated prompt payload. ([arXiv][3])
 
 ---
 
-12. Initial Selection Policy
+# 7. Context Selection
 
-The first implementation should use deterministic scoring.
+The initial resolver should use deterministic selection.
 
-Possible inputs include:
+A candidate context item can be evaluated through a function such as:
 
+```text
+U(x | stage, objective, state)
+```
+
+with signals such as:
+
+```text
+semantic relevance
 task relevance
-stage relevance
 recency
-source quality
-provenance
-dependency relationship
-prior utility
+source reliability
+epistemic status
+dependency relevance
+historical usefulness
 token cost
+```
 
-A simplified utility function could be:
+Then:
 
-U(x | s) =
-    α relevance
-  + β recency
-  + γ provenance
-  + δ priorUtility
-  - λ tokenCost
+```text
+required → always included
+optional → ranked under budget
+undeclared → inaccessible
+```
 
-This is an implementation starting point, not an architectural commitment.
+A learned resolver can later replace the deterministic scorer:
 
-A learned selector can later replace:
+```text
+Deterministic Resolver
+        ↓
+      interface
+        ↓
+Learned Resolver
+```
 
-score(...)
-
-without changing the contract or state interfaces.
-
-
----
-
-13. Stage Execution Model
-
-A stage execution becomes:
-
-S_t
- │
- ▼
-Context Resolver
- │
- ▼
-C_t^s
- │
- ▼
-LLM Stage
- │
- ▼
-Observation / Result
- │
- ▼
-Working State W_t
-
-The stage does not directly modify persistent memory.
-
+without changing the state model or stage contracts.
 
 ---
 
-14. Write Architecture
+# 8. Workflow Control
 
-Writing is explicitly separated from reading.
+The initial architecture uses:
 
-Observation
+### Fixed workflow + bounded conditional branching
+
+For example:
+
+```text
+Interpret
+   ↓
+Retrieve
+   ↓
+Judge
+   │
+   ├── sufficient ───────► Generate
+   │
+   └── insufficient ────► Refine → Retrieve
+```
+
+The system does not initially give an unconstrained planner authority to select arbitrary stages.
+
+This has several advantages:
+
+```text
+predictability
+debuggability
+bounded execution
+stable provenance
+controlled cost
+```
+
+A planner can later replace the fixed controller without changing:
+
+```text
+State
+ContextContract
+ContextResolver
+Stage interface
+Write interface
+```
+
+This preserves O6.
+
+---
+
+# 9. Epistemic Governance
+
+This is the principal extension of the architecture.
+
+The architecture separates:
+
+```text
+Information governance
+```
+
+from:
+
+```text
+Epistemic governance
+```
+
+Information governance asks:
+
+```text
+What may this stage see?
+What may it remember?
+What may it modify?
+```
+
+Epistemic governance asks:
+
+```text
+What does this information constitute?
+How strong is the evidence?
+What follows from it?
+What remains uncertain?
+When should a conclusion be revised?
+```
+
+---
+
+# 10. The Epistemic Constitution
+
+The term **epistemic constitution** refers to a stable set of instructions governing how the model interprets information.
+
+A constitution might establish:
+
+```text
+Observation ≠ inference
+
+Retrieved information ≠ established truth
+
+Hypothesis ≠ belief
+
+Confidence must track evidence
+
+Contradictions remain explicit until resolved
+
+Uncertainty must survive into downstream reasoning
+
+Persistent memory requires stronger justification
+than transient working hypotheses
+
+Claims should retain their evidential provenance
+
+New evidence may require revision of prior conclusions
+```
+
+This can be implemented initially as system-level instructions.
+
+It could later become a structured policy object.
+
+---
+
+# 11. Why Spinoza Is a Candidate
+
+Spinoza's *Treatise on the Emendation of the Intellect* is unusually relevant because it is itself a methodological project concerning the improvement of understanding.
+
+The work explicitly discusses:
+
+```text
+modes of perception
+true / fictitious / false ideas
+doubt
+memory and forgetfulness
+clear and distinct ideas
+definitions
+the method of understanding
+```
+
+and distinguishes the method from reasoning itself: the method concerns the route by which understanding acquires and orders ideas. ([Project Gutenberg][1])
+
+The work is also unfinished, so it should not be treated as a complete computational specification. Cambridge's recent overview explicitly characterizes the Treatise as an early, unfinished text and places it within Spinoza's broader methodological development. ([Cambridge University Press][4])
+
+A particularly relevant feature is the relationship between **adequate ideas** and the ordered construction of understanding. Scholarship on the Treatise emphasizes its concern with definitions, the organization of ideas, and the way understanding can reproduce the structure of what it investigates. ([Revistas USC][5])
+
+That provides a possible basis for an agent epistemic policy.
+
+The proposal is therefore:
+
+> **Do not encode "Spinozism" as the agent's personality. Translate selected epistemic principles from the Treatise into operational constraints and test whether they improve agent behavior.**
+
+---
+
+# 12. From Spinozist Method to Agent Operations
+
+A preliminary translation might look like this:
+
+| Epistemic concern                          | Agent operation                                                               |
+| ------------------------------------------ | ----------------------------------------------------------------------------- |
+| Mode of perception                         | classify provenance of information                                            |
+| Distinguishing true/fictitious/false ideas | classify claim status                                                         |
+| Doubt                                      | preserve unresolved uncertainty                                               |
+| Memory                                     | distinguish remembered proposition from current evidence                      |
+| Clear/distinct ideas                       | require explicit representation of important propositions                     |
+| Definition                                 | establish semantic contracts before reasoning                                 |
+| Ordered understanding                      | maintain dependency/provenance chains                                         |
+| Adequacy                                   | evaluate whether the available representation sufficiently explains the claim |
+
+This table is an **engineering hypothesis**, not a claim that Spinoza himself proposed these computational operations.
+
+That distinction should remain explicit throughout the research.
+
+---
+
+# 13. Epistemic State
+
+The architecture can therefore represent a proposition as more than text:
+
+```text
+Proposition
+ ├── content
+ ├── epistemicType
+ ├── evidence
+ ├── provenance
+ ├── confidence
+ ├── temporalValidity
+ ├── derivedFrom
+ ├── contradicts
+ └── supersedes
+```
+
+For example:
+
+```json
+{
+  "content": "The retrieval index fails after prolonged inactivity.",
+  "epistemicType": "hypothesis",
+  "confidence": 0.61,
+  "evidence": [
+    "execution-184",
+    "execution-201"
+  ],
+  "status": "unconfirmed"
+}
+```
+
+Later:
+
+```text
+new evidence
+     ↓
+re-evaluation
+     ↓
+hypothesis strengthened
+     ↓
+validated experience
+```
+
+or:
+
+```text
+new evidence
+     ↓
+contradiction
+     ↓
+hypothesis weakened
+     ↓
+superseded / discarded
+```
+
+This gives memory a **lifecycle of understanding**, rather than a CRUD lifecycle alone.
+
+---
+
+# 14. Memory Write Pipeline
+
+The write path becomes:
+
+```text
+Stage output
+     │
+     ▼
+Observation / Claim extraction
+     │
+     ▼
+Epistemic assessment
+     │
+     ├── observation
+     ├── hypothesis
+     ├── inference
+     ├── established knowledge
+     └── contradiction
+     │
+     ▼
+Write Proposal
      │
      ▼
 Write Policy
      │
- ┌───┼──────────────┐
- ▼   ▼              ▼
-ADD UPDATE        DELETE
- │     │             │
- └─────┼─────────────┘
-       ▼
-      M_t+1
+     ├── ADD
+     ├── UPDATE
+     ├── SUPERSEDE
+     ├── DELETE
+     └── NOOP
+     │
+     ▼
+Mₜ
+```
 
-The initial policy may be deterministic or LLM-assisted.
+The key architectural invariant becomes:
 
-The architecture should support:
-
-NOOP
-ADD
-UPDATE
-DELETE
-
-rather than a generic:
-
-WRITE
-
-because these operations have different risk profiles.
-
+> **A stage may produce information without thereby acquiring authority to make that information persistent.**
 
 ---
 
-15. Persistence Boundary
+# 15. Provenance
 
-The critical transition is:
+The provenance graph spans the complete execution:
 
-temporary information
-        │
-        ▼
- candidate memory
-        │
-        ▼
- write policy
-        │
-        ├── NOOP
-        ├── ADD
-        ├── UPDATE
-        └── DELETE
+```text
+Source
+  ↓
+Observation
+  ↓
+Candidate generation
+  ↓
+Retrieval
+  ↓
+Retrieval score
+  ↓
+Context selection
+  ↓
+ContextContract
+  ↓
+Stage invocation
+  ↓
+Interpretation
+  ↓
+Decision
+  ↓
+Action
+  ↓
+Observation
+  ↓
+Write proposal
+  ↓
+Write policy
+  ↓
+Persistent mutation
+```
 
-Therefore:
-
-> Retrieval does not imply memory.
-
-
-
-> Observation does not imply memory.
-
-
-
-> LLM output does not imply memory.
-
-
-
-Persistence requires an explicit state transition.
-
-
----
-
-16. RAG Position
-
-RAG is treated as a retrieval capability, not as the overall memory architecture.
-
-The broader system may contain:
-
-Context Resolver
-                          │
-             ┌────────────┼────────────┐
-             ▼            ▼            ▼
-        Memory Store   RAG Store    Session State
-             │            │            │
-             └────────────┼────────────┘
-                          ▼
-                     Stage Context
-
-This allows a stage to request:
-
-persistent memory
-domain knowledge
-conversation history
-retrieval evidence
-working state
-
-through one context interface.
-
-The resolver decides how those sources are assembled.
-
-
----
-
-17. Retrieval Pipeline
-
-A concrete initial RAG execution could therefore be:
-
-User
- │
- ▼
-Interpretation Stage
- │
- ▼
-Session Goal G_t
- │
- ▼
-Query Construction Stage
- │
- ▼
-W_t.query
- │
- ▼
-Retrieval Stage
- │
- ├──── RAG
- ├──── memory retrieval
- └──── previous retrieval attempts
- │
- ▼
-W_t.evidence
- │
- ▼
-Assessment Stage
- │
- ├── insufficient
- │       │
- │       ▼
- │    Query Refinement
- │       │
- │       ▼
- │    Retrieval
- │
- └── sufficient
-          │
-          ▼
-       Synthesis
-          │
-          ▼
-        Answer
-          │
-          ▼
-      Write Policy
-          │
-          ▼
-        M_t+1
-
-
----
-
-18. Execution Control
-
-The initial architecture uses:
-
-> Fixed workflow + bounded local branching.
-
-
+Each significant artifact should carry an identifier.
 
 For example:
 
-Retrieve
-   │
-   ▼
-Judge
-   │
-   ├── sufficient ──► Synthesize
-   │
-   └── insufficient ──► Refine
-                           │
-                           ▼
-                       Retrieve
+```text
+context-item-431
+retrieved-from: memory-91
+retrieval-method: hybrid
+score: 0.82
+selected-for: RetrievalJudge
+contract: judge-v3
+reason: high decision utility
+```
 
-The graph declares permitted transitions.
+Then:
 
-There is no unrestricted planner deciding:
+```text
+memory-91
+      ↓
+context-item-431
+      ↓
+judge-decision-77
+      ↓
+write-proposal-14
+      ↓
+memory-update-204
+```
 
-"Which of the 27 stages should I invoke next?"
+This makes the system inspectable at **decision boundaries**, rather than merely observable at API boundaries.
 
-This reduces coordination complexity and makes failures inspectable.
-
-
----
-
-19. Why Stage Selection Remains Replaceable
-
-The execution interface should be:
-
-StageSelection
-      │
-      ▼
-R(stage, contract, S_t)
-      │
-      ▼
-Stage
-
-Today:
-
-Fixed Graph
-
-Later:
-
-Planner
-
-Potentially later:
-
-Learned Router
-
-The state and context architecture remains unchanged.
-
-This makes stage-selection policy an intentionally replaceable component.
-
+The need for this kind of evidence/execution lineage is independently emerging in current agent research. ([arXiv][2])
 
 ---
 
-20. Full Architecture
+# 16. Complete Architecture
 
-USER
-                           │
-                           ▼
-                 ┌──────────────────┐
-                 │ Session State    │
-                 │ G_t / H_t        │
-                 └────────┬─────────┘
-                          │
-                          ▼
-                    Fixed Workflow
-                          │
-                          ▼
-              ┌────────────────────────┐
-              │   Context Resolver     │
-              │ R(stage, contract,S_t) │
-              └────────────┬───────────┘
-                           │
-                           ▼
-                    Context Bundle
-                           │
-                           ▼
-                    ┌────────────┐
-                    │ LLM Stage  │
-                    └─────┬──────┘
-                          │
-                          ▼
-                    Stage Result
-                          │
-                          ▼
-                    Working State
-                         W_t
-                          │
-               ┌──────────┴──────────┐
-               │                     │
-               ▼                     ▼
-         Workflow Branch        Write Policy
-               │                     │
-               │             ┌───────┼────────┐
-               │             ▼       ▼        ▼
-               │            ADD    UPDATE   DELETE
-               │             │       │        │
-               │             └───────┼────────┘
-               │                     ▼
-               │                    M_t
-               │
-               └──────────► Next Stage
+```text
+                         ┌───────────────────────┐
+                         │     PERSISTENT Mₜ     │
+                         │ facts / procedures /  │
+                         │ validated experience  │
+                         └───────────┬───────────┘
+                                     │
+                                     │
+                         ┌───────────▼───────────┐
+                         │     SESSION Gₜ/Hₜ     │
+                         │ goal / history /      │
+                         │ constraints / plan    │
+                         └───────────┬───────────┘
+                                     │
+                                     │
+                         ┌───────────▼───────────┐
+                         │       WORKING Wₜ      │
+                         │ hypotheses / tools /  │
+                         │ retrieval attempts    │
+                         └───────────┬───────────┘
+                                     │
+                                     ▼
+                    ┌──────────────────────────────┐
+                    │      CONTEXT RESOLVER R      │
+                    │                              │
+                    │ stage + contract + state     │
+                    │          ↓                   │
+                    │ stage-specific context       │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                       ┌────────────────────────┐
+                       │    EPISTEMIC POLICY    │
+                       │                        │
+                       │ evidence               │
+                       │ uncertainty            │
+                       │ inference              │
+                       │ contradiction          │
+                       │ belief formation       │
+                       └───────────┬────────────┘
+                                   │
+                                   ▼
+                              ┌──────────┐
+                              │   LLM    │
+                              │  Stage   │
+                              └────┬─────┘
+                                   │
+                         ┌─────────┴─────────┐
+                         ▼                   ▼
+                     Decision           Proposition
+                         │                   │
+                         ▼                   ▼
+                      Action          Write Proposal
+                         │                   │
+                         ▼                   ▼
+                    Observation       Write Policy
+                         │                   │
+                         └─────────┬─────────┘
+                                   ▼
+                                Wₜ / Gₜ
+                                   │
+                                   │ promotion
+                                   ▼
+                                  Mₜ
+```
 
-The architecture therefore has four fundamental abstractions:
+The central architectural boundary is:
 
-State
-Stage
-Context Contract
-Context Resolver
-
-And two independent policy domains:
-
-Read / Context Policy
-Mutation / Write Policy
-
-The workflow controls execution order.
-
-
----
-
-21. Architectural Invariants
-
-The following should become implementation-level invariants.
-
-I1 — Context isolation
-
-A stage receives only information authorized by its contract.
-
-I2 — Closed-world access
-
-Unlisted state is unavailable.
-
-I3 — Read purity
-
-Context resolution cannot mutate state.
-
-I4 — Persistent write mediation
-
-No component directly mutates M_t outside the write policy.
-
-I5 — Working-state ephemerality
-
-W_t disappears unless explicitly promoted.
-
-I6 — Retrieval/persistence separation
-
-Retrieving information does not automatically persist it.
-
-I7 — Workflow boundedness
-
-Initial execution transitions are explicitly declared.
-
-I8 — Policy replaceability
-
-Stage-selection and context-ranking mechanisms can evolve without changing state semantics.
-
-I9 — Permission independence
-
-Read authorization and mutation authorization remain separate configurations.
-
-I10 — Deterministic baseline
-
-The initial system must have a deterministic mode that does not require learned policy.
-
+```text
+                 INFORMATION
+                     │
+              Context Resolver
+                     │
+                     ▼
+                 COGNITION
+                     │
+              Epistemic Policy
+                     │
+                     ▼
+                  ACTION
+                     │
+                     ▼
+                 OBSERVATION
+                     │
+                     ▼
+                  MEMORY
+```
 
 ---
 
-22. Known Limitations
+# 17. What the Architecture Claims
 
-L1 — The state ontology remains a design choice
+The architecture makes **architectural claims**, not performance claims.
 
-The three tiers are useful for implementation, but the literature does not establish them as a universal ontology.
+### Claim A
 
-A future system may require additional distinctions.
+State lifetime and mutation authority should be explicit.
 
-The architecture should therefore treat the tiers as interfaces, not metaphysical categories.
+### Claim B
 
+Cognitive stages benefit from stage-specific context rather than indiscriminate state exposure.
 
----
+### Claim C
 
-L2 — Stage boundaries are partly empirical
+Context resolution should be centralized.
 
-The definition of a stage is operational, but deciding whether two operations deserve separate LLM invocations remains a system-specific optimization.
+### Claim D
 
-Over-decomposition can increase:
+Read authorization and write authorization should remain separate.
 
-latency;
+### Claim E
 
-token consumption;
+Transient execution state should have an explicit persistence boundary.
 
-orchestration complexity;
+### Claim F
 
-failure surface.
+A fixed workflow with bounded branching provides a useful baseline before introducing autonomous planning.
 
+### Claim G
 
+Reasoning provenance should extend from retrieval through persistent mutation.
 
----
+### Hypothesis H
 
-L3 — Deterministic context scoring may plateau
+An explicit epistemic constitution can improve reasoning consistency, calibration, correction, and memory quality.
 
-The initial resolver may fail to recognize complex dependencies between information items.
+### Hypothesis H-Spinoza
 
-A learned selector may eventually outperform it.
+A constitution derived from Spinoza's methodological treatment of understanding may produce measurable improvements over generic reasoning instructions.
 
-The architecture deliberately postpones that decision.
-
-
----
-
-L4 — Read/write coupling remains unresolved
-
-Current research supports separate read and write mechanisms and has formalized their coupling.
-
-The architecture does not claim to solve joint optimization of:
-
-read → action → write
-
-This remains an experimental research direction.
-
+H-Spinoza is **the most speculative component** of the architecture.
 
 ---
 
-L5 — Memory correctness is unresolved
+# 18. What We Are Deliberately Not Claiming
 
-A write policy can still create:
+This paper does not claim that:
 
-false memories
-stale memories
-contradictory memories
-self-reinforcing errors
+* Spinoza provides a complete theory of machine reasoning;
+* philosophical prompts automatically improve LLM reasoning;
+* explicit epistemic policies outperform ordinary prompting;
+* centralized context resolution is universally superior;
+* three state tiers are theoretically canonical;
+* deterministic policies will outperform learned policies;
+* memory necessarily requires graphs;
+* every cognitive operation requires an LLM;
+* the architecture is superior to LangGraph, LlamaIndex, Mem0, or other production frameworks.
 
-Persistent memory therefore requires provenance and validation research.
-
-
----
-
-L6 — Forgetting remains underspecified
-
-The architecture supports deletion and update but does not yet define an optimal forgetting policy.
-
-Questions remain around:
-
-staleness
-supersession
-confidence decay
-contradiction
-privacy
-memory utility decay
-
+The architecture is a **testable design hypothesis**.
 
 ---
 
-L7 — Token budgeting remains empirical
+# 19. Known Limitations
 
-There is evidence for saturation and for stage-specific routing, but no universal budget formula.
+## L1 — LLM compliance
 
-Budget allocation must be measured against the target workload.
+The model may interpret epistemic instructions inconsistently.
 
+A constitution expressed in natural language remains a probabilistic instruction.
+
+## L2 — Epistemic policy ambiguity
+
+Terms such as:
+
+```text
+evidence
+adequacy
+belief
+certainty
+understanding
+```
+
+require operational definitions before evaluation.
+
+## L3 — Provenance does not guarantee correctness
+
+A complete provenance chain can explain why a system reached a conclusion while the conclusion remains wrong.
+
+Traceability and truth are separate properties.
+
+## L4 — Context contracts can become maintenance overhead
+
+Closed-world authorization prevents accidental information leakage but increases contract-maintenance cost.
+
+## L5 — Centralization can become a bottleneck
+
+A universal resolver could become:
+
+```text
+single performance bottleneck
+single architectural dependency
+single source of policy complexity
+```
+
+This must be tested rather than assumed away.
+
+## L6 — Memory write policies face delayed credit assignment
+
+The value of a memory mutation may become apparent much later.
+
+A memory that appears useless now may become valuable in a future task, while an apparently useful memory may later cause systematic error.
+
+## L7 — Epistemic representations can become expensive
+
+Representing evidence, relationships, contradictions, and derivations creates additional tokens, storage, and processing.
+
+## L8 — Philosophical translation is lossy
+
+Mapping a historical philosophical text into computational primitives inevitably introduces interpretation.
+
+The resulting system would be **Spinoza-inspired**, not "Spinoza implemented."
+
+## L9 — Architecture complexity
+
+The architecture deliberately introduces additional boundaries:
+
+```text
+state
+contract
+resolver
+epistemic policy
+stage
+write policy
+provenance
+```
+
+The system therefore needs evidence that each boundary produces practical value.
 
 ---
 
-L8 — Shared state introduces concurrency concerns
+# 20. Research Questions
 
-If multiple stages eventually execute concurrently, state transitions require:
+### RQ1 — Context
 
-versioning
-conflict detection
-transaction semantics
-write ordering
+Does stage-conditioned context improve task performance compared with global context at equivalent token budgets?
 
-The current architecture assumes sequential state transitions.
+### RQ2 — Resolver
 
+Does centralized context resolution reduce irrelevant context and improve debugging compared with stage-local retrieval?
 
----
+### RQ3 — Memory
 
-L9 — Context provenance is not fully specified
+Does explicit promotion from `Wₜ → Mₜ` improve long-term memory quality?
 
-The context bundle should eventually preserve enough metadata to determine:
+### RQ4 — Mutation
 
-source
-retrieval mechanism
-timestamp
-memory identifier
-confidence
-transformation history
+Does explicit ADD/UPDATE/SUPERSEDE/DELETE/NOOP policy reduce memory corruption?
 
-The exact provenance model remains a TODO.
+### RQ5 — Provenance
 
+Does decision-level provenance improve error diagnosis compared with ordinary execution tracing?
 
----
+### RQ6 — Epistemic policy
 
-23. Explicitly Deferred Research
+Does an explicit epistemic constitution improve:
 
-The following should not enter the initial implementation unless experiments justify them.
+```text
+calibration
+contradiction handling
+unsupported inference
+memory correction
+```
 
-R1 — Learned context selection
+?
 
-Replace deterministic ranking with learned decision utility.
+### RQ7 — Spinoza
 
-R2 — Learned stage routing
+Does a Spinoza-derived epistemic constitution outperform:
 
-Replace the fixed graph with a planner/router.
+```text
+generic system prompt
+structured reasoning instructions
+domain-specific reasoning policy
+```
 
-R3 — Joint read/action/write optimization
+under controlled conditions?
 
-Investigate:
+### RQ8 — Compounding effects
 
-π_R + π_A + π_U
+Does improved epistemic memory produce greater performance gains over multiple sessions than it produces on individual tasks?
 
-as a coupled policy.
+### RQ9 — Complexity
 
-R4 — Learned memory write policy
-
-Compare deterministic, prompted, and RL-based memory management.
-
-R5 — Uncertainty-gated persistent writes
-
-Introduce value/uncertainty arbitration for irreversible memory operations.
-
+At what point does the architectural machinery cost more than it contributes?
 
 ---
 
-24. TODO: Architecture Validation
+# 21. Experimental Program
 
-The architecture needs empirical validation before further abstraction.
+The experiments should proceed incrementally.
 
-Experiment A — Global vs stage-specific context
+## Phase I — Information governance
 
 Compare:
 
+```text
 Global context
 vs.
-Stage-conditioned context
+Stage-specific contracts
+```
 
-Control for:
-
-task set;
-
-model;
-
-token budget;
-
-retrieval corpus;
-
-number of inference calls.
-
+Hold the model, task, retrieval system, and token budget constant.
 
 Measure:
 
-accuracy
-context tokens
+```text
+answer quality
+retrieval precision
+token consumption
+context pollution
 latency
-irrelevant-context rate
-failure rate
-
+```
 
 ---
 
-Experiment B — Closed-world contracts
+## Phase II — Persistence governance
 
 Compare:
 
-default allow
+```text
+automatic memory accumulation
 vs.
-default deny
+explicit promotion policy
+```
 
-Measure information leakage and maintenance failures after adding new state fields.
+Measure:
 
+```text
+memory precision
+memory recall
+stale-memory rate
+contradiction rate
+future-task utility
+```
 
 ---
 
-Experiment C — Context ranking
+## Phase III — Provenance
 
 Compare:
 
-random
-recency
-semantic similarity
-deterministic utility
-learned utility
-
-under equal token budgets.
-
-
----
-
-Experiment D — Stage granularity
-
-Compare:
-
-coarse stages
+```text
+API/execution traces
 vs.
-fine stages
+decision-level provenance
+```
 
-Measure whether additional stages produce meaningful gains relative to their coordination cost.
+Measure:
 
-
----
-
-Experiment E — Memory writes
-
-Compare:
-
-no memory
-append-only memory
-ADD/UPDATE/DELETE
-learned memory policy
-
-Measure long-horizon performance and memory quality.
-
+```text
+failure localization
+debugging time
+incorrect attribution
+recovery success
+```
 
 ---
 
-Experiment F — Memory vs long context
+## Phase IV — Epistemic constitution
 
-Hold available token budget constant.
+Four controlled conditions:
 
-Compare:
+```text
+A — Baseline
+B — Structured reasoning policy
+C — General epistemic constitution
+D — Spinoza-derived constitution
+```
 
-long conversation context
-vs.
-persistent memory + selective retrieval
+Same:
 
-Measure decision quality rather than recall alone.
-
-
----
-
-Experiment G — Read/write coupling
-
-Eventually compare:
-
-Independent read/write
-vs.
-coupled read/write
-vs.
-coupled read/action/write
-
-This is the strongest research experiment in the program.
-
-
----
-
-25. TODO: State Schema
-
-Define concrete schemas for:
-
-M_t
-G_t
-H_t
-W_t
-
-including:
-
-identity
-version
-timestamp
-provenance
-confidence
-validity
-source
-relationships
-
-without prematurely forcing a graph, vector database, or document store.
-
-
----
-
-26. TODO: Memory Representation
-
-Benchmark:
-
-vector records
-structured records
-claim-oriented records
-graph representation
-trajectory/filesystem representation
-hybrid representation
-
-against the actual workload.
-
-The architecture should not hard-code the storage substrate.
-
-
----
-
-27. TODO: Write Semantics
-
-Define formal semantics for:
-
-ADD
-UPDATE
-DELETE
-NOOP
-
-including conflict handling.
-
-Example:
-
-Existing:
-"user prefers X"
-
-New evidence:
-"user now prefers Y"
-
-UPDATE:
-replace?
-
-Version:
-preserve both?
-
-Supersession:
-mark X obsolete?
-
-Conflict:
-retain both with provenance?
-
-This is a major part of making persistent memory reliable.
-
-
----
-
-28. TODO: Context Provenance
-
-Every context item should eventually be traceable:
-
-Context Item
-     │
-     ├── state source
-     ├── retrieval method
-     ├── memory ID
-     ├── timestamp
-     ├── relevance score
-     └── transformation history
-
-This allows debugging:
-
-> "Why did this LLM receive this information?"
-
-
-
-That question should have a deterministic answer.
-
-
----
-
-29. TODO: Evaluation Harness
-
-Every stage invocation should produce an execution trace containing at minimum:
-
-execution_id
-stage_id
-contract_version
-state_version
-selected_context
-omitted_candidates
+```text
 model
-prompt/version
-tool calls
-output
-transition
-state mutations
-latency
-token usage
+tools
+retrieval
+workflow
+context budget
+tasks
+```
 
-This turns architecture evaluation into an observable system rather than a qualitative prompt comparison.
+Measure:
 
+```text
+accuracy
+calibration
+contradiction resolution
+uncertainty preservation
+unsupported claims
+memory quality
+memory correction
+provenance quality
+```
 
 ---
 
-30. Final Architectural Position
+## Phase V — Longitudinal compounding
 
-The current architecture can be summarized as:
+This is arguably the most important experiment.
 
-STATE
-                    │
-                    │
-          ┌─────────▼─────────┐
-          │ Context Contract  │
-          └─────────┬─────────┘
-                    │
-                    ▼
-             Context Resolver
-             R(stage,C,S)
-                    │
-                    ▼
-              Cognitive Stage
-                    │
-                    ▼
-                 W_t
-                    │
-            ┌───────┴────────┐
-            │                │
-        Workflow          Write Policy
-            │                │
-            ▼                ▼
-       Next Stage           M_t
+Run repeated sessions:
 
-The central architectural principle is:
+```text
+Session 1
+   ↓
+Memory
+   ↓
+Session 2
+   ↓
+Memory correction
+   ↓
+Session 3
+   ↓
+...
+   ↓
+Session N
+```
 
-> The agent maintains state; stages declare what they need; one resolver constructs stage-specific context; stages produce observations; a separate write policy controls persistence; the workflow controls which cognitive operation executes next.
+Compare the rate at which each architecture accumulates:
 
+```text
+useful knowledge
+incorrect knowledge
+obsolete knowledge
+contradictions
+unsupported beliefs
+```
 
+A memory architecture should be evaluated as a **dynamic system**, not merely by whether it answers an isolated question correctly.
 
-The architecture intentionally leaves three dimensions replaceable:
+---
 
-Context selection
-Stage selection
-Memory write policy
+# 22. Falsification Criteria
 
-The baseline uses deterministic implementations for all three.
+The architecture should be considered unsuccessful if controlled experiments show that:
 
-That gives us a system that can be built and measured before attempting learned control.
+### F1
 
-The research frontier then becomes an experimental extension rather than an architectural dependency:
+Global context performs as well as stage-conditioned context at equal cost.
 
-┌──────────────────────────┐
-               │      Current System       │
-               │                           │
-               │ deterministic R           │
-               │ fixed workflow            │
-               │ governed U                │
-               └────────────┬──────────────┘
-                            │
-                     empirical evidence
-                            │
-                            ▼
-               ┌──────────────────────────┐
-               │     Research System      │
-               │                           │
-               │ learned R                │
-               │ learned routing          │
-               │ joint R → A → U          │
-               └──────────────────────────┘
+### F2
 
-That separation is important. The architecture is now stable enough to implement; the policies remain experimentally replaceable.
+Stage-local retrieval performs as well as centralized resolution without producing greater debugging complexity.
+
+### F3
+
+Automatic memory accumulation performs as well as explicit promotion.
+
+### F4
+
+Provenance does not improve failure diagnosis.
+
+### F5
+
+Epistemic policies do not improve decision quality or calibration.
+
+### F6
+
+The additional architecture produces less benefit than its computational and engineering overhead.
+
+### F7
+
+The Spinoza-derived constitution provides no measurable advantage over simpler epistemic policies.
+
+That last result would be useful.
+
+The architecture should survive even if the philosophical hypothesis fails.
+
+---
+
+# 23. Implementation Roadmap
+
+### V1 — Deterministic architecture
+
+Implement:
+
+```text
+Mₜ
+Gₜ/Hₜ
+Wₜ
+
+ContextContract
+ContextResolver
+
+fixed workflow
+bounded branches
+
+write proposals
+ADD / UPDATE / SUPERSEDE / DELETE / NOOP
+
+provenance
+```
+
+No learned policies.
+
+---
+
+### V2 — Epistemic representation
+
+Introduce:
+
+```text
+Observation
+Evidence
+Hypothesis
+Inference
+Belief
+Contradiction
+```
+
+without changing the workflow.
+
+---
+
+### V3 — Epistemic constitution
+
+Introduce a structured system-level epistemic policy.
+
+Test generic versus Spinoza-derived variants.
+
+---
+
+### V4 — Learned policies
+
+Only after deterministic baselines establish their failure modes:
+
+```text
+learned context ranking
+learned memory write policy
+learned routing
+```
+
+---
+
+### V5 — Joint optimization
+
+Only if evidence warrants it:
+
+```text
+π_R
+π_A
+π_U
+```
+
+could eventually be optimized jointly.
+
+This remains a research direction rather than a V1 architectural requirement.
+
+---
+
+# 24. Open TODOs
+
+## Architecture
+
+* Formalize the state schema.
+* Define stage lifecycle.
+* Define contract schema.
+* Define resolver interface.
+* Define mutation capabilities.
+* Define persistence boundaries.
+* Define provenance schema.
+
+## Epistemic layer
+
+* Extract the operational principles from the Treatise.
+* Separate textual interpretation from engineering interpretation.
+* Define an epistemic state machine.
+* Determine whether "adequacy" can receive a useful computational definition.
+* Define evidence strength without collapsing it into arbitrary confidence scores.
+* Define contradiction semantics.
+* Define belief revision rules.
+
+## Memory
+
+* Define conflict resolution.
+* Define supersession.
+* Define temporal validity.
+* Define provenance retention.
+* Define forgetting.
+* Define memory consolidation.
+
+## Evaluation
+
+* Build longitudinal tasks.
+* Construct contradiction tasks.
+* Construct memory-corruption tasks.
+* Construct provenance-debugging tasks.
+* Measure token cost.
+* Measure latency.
+* Measure context pollution.
+* Measure cumulative memory quality.
+
+## Research
+
+* Compare philosophical constitutions.
+* Compare natural-language versus structured epistemic policies.
+* Compare one global constitution versus stage-specific epistemic policies.
+* Test whether epistemic policy benefits survive across models.
+* Test whether benefits persist after prompt optimization.
+
+---
+
+# 25. What Is Worth Stealing From Existing Systems
+
+The architecture should remain compatible with proven ideas from the current ecosystem rather than rebuilding everything.
+
+### Memory
+
+Borrow:
+
+```text
+multi-signal retrieval
+priority-based context fitting
+temporal validity
+explicit CRUD semantics
+```
+
+Systems such as Mem0, LlamaIndex Memory, and temporal-memory systems provide useful implementation precedents.
+
+### Context
+
+Borrow:
+
+```text
+token budgeting
+structured context
+progressive retrieval
+context compaction
+```
+
+Recent agent-context work increasingly treats context as a managed lifecycle rather than a static prompt. ([arXiv][6])
+
+### Provenance
+
+Borrow:
+
+```text
+execution tracing
+evidence lineage
+claim attribution
+memory lineage
+```
+
+This aligns with current evidence-tracing research. ([arXiv][2])
+
+### Orchestration
+
+Borrow:
+
+```text
+graph execution
+checkpointing
+bounded branching
+typed state
+```
+
+The architecture does not need to replace existing orchestration frameworks.
+
+It needs to impose stronger contracts around them.
+
+---
+
+# 26. Architectural Thesis
+
+The central thesis can now be stated more precisely:
+
+> **A persistent LLM agent should be treated as a governed cognitive system rather than a retrieval pipeline.**
+
+Its architecture has four interacting dimensions:
+
+```text
+                 ┌───────────────────┐
+                 │       STATE       │
+                 │ What exists?      │
+                 │ How long?         │
+                 │ Who can mutate?   │
+                 └─────────┬─────────┘
+                           │
+                           ▼
+                 ┌───────────────────┐
+                 │      CONTEXT      │
+                 │ What may this     │
+                 │ stage see?        │
+                 └─────────┬─────────┘
+                           │
+                           ▼
+                 ┌───────────────────┐
+                 │     EPISTEMIC     │
+                 │ How should it     │
+                 │ understand it?   │
+                 └─────────┬─────────┘
+                           │
+                           ▼
+                 ┌───────────────────┐
+                 │      ACTION       │
+                 │ What should it    │
+                 │ do?               │
+                 └─────────┬─────────┘
+                           │
+                           ▼
+                 ┌───────────────────┐
+                 │      MEMORY       │
+                 │ What should       │
+                 │ persist?          │
+                 └───────────────────┘
+```
+
+The provenance layer cuts across all four:
+
+```text
+                    PROVENANCE
+                       │
+       ┌───────────────┼────────────────┐
+       ▼               ▼                ▼
+     STATE          CONTEXT          EPISTEMIC
+       │               │                │
+       └───────────────┼────────────────┘
+                       ▼
+                     ACTION
+                       │
+                       ▼
+                     MEMORY
+```
+
+That is the refined architecture.
+
+The **Context Contract + Context Resolver** governs information access.
+
+The **mutation authority + Write Policy** governs persistence.
+
+The **epistemic constitution** governs interpretation.
+
+The **provenance system** makes the resulting decisions inspectable.
+
+The **fixed workflow** keeps the initial system tractable.
+
+And the entire policy layer remains replaceable.
+
+---
+
+# 27. Final Research Position
+
+The strongest version of the proposal is therefore **not**:
+
+> "Build a RAG system based on Spinoza."
+
+It is:
+
+> **Build a governed cognitive architecture in which state, context, epistemic interpretation, action, and memory are explicit and independently controllable; then investigate whether an explicit epistemic constitution, including a Spinoza-derived formulation, improves the system's ability to reason, correct itself, and accumulate reliable knowledge over time.**
+
+That framing protects the architectural work from the philosophical hypothesis.
+
+If the Spinoza experiment fails, we still have:
+
+```text
+State isolation
++
+Context contracts
++
+Central resolver
++
+Mutation authority
++
+Controlled persistence
++
+Provenance
+```
+
+If it succeeds, however, the implications are substantially larger:
+
+**the system prompt stops being merely an instruction layer and becomes part of the agent's epistemic architecture.**
+
+That is the hypothesis I would take to other frontier models for adversarial review.
+
+[1]: https://www.gutenberg.org/files/1016/1016-h/1016-h.htm?utm_source=chatgpt.com "The Project Gutenberg E-text of On the Improvement of the Understanding, by Baruch Spinoza"
+[2]: https://arxiv.org/abs/2606.04990?utm_source=chatgpt.com "From Agent Traces to Trust: Evidence Tracing and Execution Provenance in LLM Agents"
+[3]: https://arxiv.org/abs/2603.09619?utm_source=chatgpt.com "Context Engineering: From Prompts to Corporate Multi-Agent Architecture"
+[4]: https://www.cambridge.org/core/books/abs/cambridge-spinoza-lexicon/treatise-on-the-emendation-of-the-intellect/E931822ABFB48CF29805A8E4E18486F8?utm_source=chatgpt.com "Treatise on the Emendation of the Intellect (185.) - The Cambridge Spinoza Lexicon"
+[5]: https://revistas.usc.gal/index.php/agora/article/view/8240/12853?utm_source=chatgpt.com "Adequate idea and order of philosophizing in Spinoza’s Treatise on the emendation of the intellect: prolegomena to the ontology of the Ethics | Agora. Papeles de Filosofía"
+[6]: https://arxiv.org/abs/2607.21503?utm_source=chatgpt.com "Agentic Context Management: Solving Agent Memory and Cost by Treating Them as Lifecycle and Architecture Problems"
